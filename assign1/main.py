@@ -71,7 +71,6 @@ def evaluate_classifier(X, W, b, verbose=False):
 # Fifth step, write the function that computes the cost function given the equation 5 (see notes),
 # for a set of images. Lambda is the regularization term.
 def compute_cost(X, Y, W, b, lamb=0.1):
-    print('<| Compute cost :')
     """
     1/D SUM_[x,y in D] l_cross(x,y,W,b) + lambda SUM_[i,j] W_[i,j]^2
     """
@@ -86,6 +85,7 @@ def compute_cost(X, Y, W, b, lamb=0.1):
     for col in range(num_points):
         loss_sum += l_cross(X[:, col], Y[:, col], W, b)
     cost = (loss_sum + regularization_sum) / num_points
+
     # Cost becomes a 1 x 1 matrix but J is supposed to be a scalar, so return only the scalar value
     return cost[0, 0]
 
@@ -110,6 +110,7 @@ def compute_accuracy(X, y, W, b):
 
 # Seventh step, write the function that evaluates, for a mini-batch, the gradients of the cost function w.r.t W and b
 def compute_gradients(X, Y, P, W, lamb):
+    print('<| Compute gradient analytically [fast]:')
     """
     Each column of X corresponds to an image, and X has size d x n.
     Each column of Y is the one-hot ground truth label for the corresponding column of X, and Y has size K x n.
@@ -130,7 +131,14 @@ def compute_gradients(X, Y, P, W, lamb):
     #           dL/db += g
     g_batch = -(Y - P)
     grad_b = g_batch / len_D
+    grad_b = np.sum(grad_b, axis=1)
+    if len(grad_b.shape) < 2:
+        grad_b = np.asmatrix(grad_b).T
     grad_W = 2*lamb*W + (g_batch@X.T) / len_D
+
+    assert grad_W.shape == (10, 3072)
+    assert grad_b.shape == (10, 1)
+
     return grad_W, grad_b
 
 
@@ -161,17 +169,57 @@ def computeGradsNum(X, Y, P, W, b, lamda, h):
     return [grad_W, grad_b]
 
 
+# Use the 'functions.py' slow grad func to compare to analytical
+def computeGradsNumSlow(X, Y, P, W, b, lamda, h):
+    print('<| Compute gradient numerically [slow] :')
+    """ Converted from matlab code """
+    no = W.shape[0]
+    d = X.shape[0]
+
+    grad_W = np.zeros(W.shape);
+    grad_b = np.zeros((no, 1));
+
+    for i in range(len(b)):
+        b_try = np.array(b)
+        b_try[i] -= h
+        c1 = compute_cost(X, Y, W, b_try, lamda)
+
+        b_try = np.array(b)
+        b_try[i] += h
+        c2 = compute_cost(X, Y, W, b_try, lamda)
+
+        grad_b[i] = (c2 - c1) / (2 * h)
+
+    for i in range(W.shape[0]):
+        for j in range(W.shape[1]):
+            W_try = np.array(W)
+            W_try[i, j] -= h
+            c1 = compute_cost(X, Y, W_try, b, lamda)
+
+            W_try = np.array(W)
+            W_try[i, j] += h
+            c2 = compute_cost(X, Y, W_try, b, lamda)
+
+            grad_W[i, j] = (c2 - c1) / (2 * h)
+
+    return [grad_W, grad_b]
+
+
 # You should compare your analytical gradient with the numerical gradient by examining their
 # absolute differences and declaring if all these absolute differences are small.
 # A more reliable method is to compute the relative error between a numerically computed gradient value g_n
 # and an analytically computed gradient value g_a
-def compare_gradients(g_a, g_n, eps=1e-2):
+def compare_gradients(g_a, g_n, verbose=False, eps=1e-6):
     # is this value small? then good, we have almost the same gradient.
-    assert(g_a.shape == g_n.shape)
+    assert(g_a.shape == g_n.shape), print('<| shape of g_a: {}\n<| shape of g_n: {}'.format(g_a.shape, g_n.shape))
     err = np.zeros(g_a.shape)
     for i in range(err.shape[0]):
         for j in range(err.shape[1]):
             err[i, j] = np.abs(g_a[i, j] - g_n[i, j]) / max(eps, np.abs(g_a[i, j]) + np.abs(g_n[i, j]))
+
+    if verbose:
+        print('<| Compare gradients:\n', err)
+
     return err
 
 
@@ -182,12 +230,13 @@ if __name__ == '__main__':
     X, Y, y = parse_data(data, True)
     X = preprocess_data(X)
     W, b = initialize_params(Y.shape[0], X.shape[0], True)
-    J = compute_cost(X, Y, W, b)
-    acc = compute_accuracy(X, y, W, b)
-    print(acc)
-    P = evaluate_classifier(X[:, 100], W, b)
-    grad_W, grad_b = compute_gradients(X[:, 100], Y[:, 100], P, W, 0.1)
+    # J = compute_cost(X, Y, W, b)
+    # acc = compute_accuracy(X, y, W, b)
+    batch_n = 100
+    P = evaluate_classifier(X[:, :batch_n], W, b)
+    grad_W, grad_b = compute_gradients(X[:, :batch_n], Y[:, :batch_n], P, W, 0)
     # ALRIGHT GOOD! My computed gradients are very close to those of the given function.
-    ttt = computeGradsNum(X[:, 100], Y[:, 100], P, W, b, 0.1, 1)
-    eps = compare_gradients(grad_b, ttt[1])
-    print('gradient diff: ', eps)
+    ttt = computeGradsNumSlow(X[:, :batch_n], Y[:, :batch_n], P, W, b, 0.1, 1e-6)
+    print('grad_W:', grad_W)
+    print('numerical grad_W:', ttt[0])
+    eps = compare_gradients(grad_b, ttt[1], True)
