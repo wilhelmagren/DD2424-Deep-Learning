@@ -3,9 +3,21 @@ Author: Wilhelm Ågren, wagren@kth.se
 Last edited: 31/3/2021
 """
 
-from functions import *
 import numpy as np
 import matplotlib.pyplot as plt
+
+
+def softmax(x):
+    """ Standard definition of the softmax function """
+    return np.exp(x) / np.sum(np.exp(x), axis=0)
+
+
+def loadBatch(filename):
+    """ Copied from the dataset website """
+    import pickle
+    with open('Dataset/' + filename, 'rb') as fo:
+        dict = pickle.load(fo, encoding='bytes')
+    return dict
 
 
 # First step, read the data from the CIFAR-10 batch file and format it
@@ -44,39 +56,49 @@ def preprocess_data(x):
 
 
 # Third step, initialize the parameters of the model W and b since we now dimensionality's
-def initialize_params(K, d, verbose=False):
+def initialize_params(K, d, m, verbose=False):
     print('<| Initialize params :')
-    W = np.random.normal(0, 0.01, size=(K, d))
-    b = np.random.normal(0, 0.01, size=(K, 1))
+    # W1: m x d
+    # W2: K x m
+    # b1: m x 1
+    # b2: K x 1
+    W1 = np.random.normal(0, 1/np.sqrt(d), size=(m, d))
+    W2 = np.random.normal(0, 1/np.sqrt(m), size=(K, m))
+    b1 = np.zeros(shape=(m, 1))
+    b2 = np.zeros(shape=(K, 1))
 
     if verbose:
-        print('\tthe shape of W:', W.shape)
-        print('\tthe shape of b:', b.shape)
+        print('\tthe shape of W1:', W1.shape)
+        print('\tthe shape of W2:', W2.shape)
+        print('\tthe shape of b1:', b1.shape)
+        print('\tthe shape of b2:', b2.shape)
 
-    return W, b
+    return W1, W2, b1, b2
 
 
 # Fourth step, write a function that evaluates the network function,
 # i.e. equations 1, 2 (see notes) on multiple images and returns the results.
-def evaluate_classifier(X, W, b, verbose=False):
-    s = 0
+def evaluate_classifier(X, W1, W2, b1, b2, verbose=False):
+    s1 = 0
     if len(X.shape) > 1:
-        s = W@X + b
+        s1 = W1@X + b1
     else:
-        tmp = W@X
-        s = np.asmatrix(tmp).T + b
+        tmp = W1@X
+        s1 = np.asmatrix(tmp).T + b1
+    h = np.maximum(0, s1)
+    s = W2@h + b2
     p = softmax(s)
 
     if verbose:
         print('\ts becomes:', s)
         print('\tsoftmax(s) = p yields:', p)
 
-    return p
+    return p, h
 
 
 # Fifth step, write the function that computes the cost function given the equation 5 (see notes),
 # for a set of images. Lambda is the regularization term.
-def compute_cost(X, Y, W, b, lamb):
+def compute_cost(X, Y, W1, W2, b1, b2, lamb):
     """
     1/D SUM_[x,y in D] l_cross(x,y,W,b) + lambda SUM_[i,j] W_[i,j]^2
     """
@@ -85,19 +107,19 @@ def compute_cost(X, Y, W, b, lamb):
     if len(Y.shape) < 2:
         Y = np.asmatrix(Y).T
     assert (X.shape[1] == Y.shape[1])
+
     num_points = X.shape[1]
-    regularization_sum = lamb * np.sum(W**2)
+    regularization_sum = lamb * (np.sum(W1**2) + np.sum(W2**2))
     loss_sum = 0
     for col in range(num_points):
-        loss_sum += l_cross(X[:, col], Y[:, col], W, b)
-    cost = (loss_sum + regularization_sum) / num_points
-
+        loss_sum += l_cross(X[:, col], Y[:, col], W1, W2, b1, b2)
+    cost = loss_sum/num_points + regularization_sum
     # Cost becomes a 1 x 1 matrix but J is supposed to be a scalar, so return only the scalar value
-    return cost[0, 0]
+    return cost[0, 0], loss_sum/num_points
 
 
-def l_cross(x, y, W, b):
-    P = evaluate_classifier(x, W, b)
+def l_cross(x, y, W1, W2, b1, b2):
+    P, _ = evaluate_classifier(x, W1, W2, b1, b2)
     return -np.log(np.dot(y.T, P))
 
 
@@ -115,95 +137,47 @@ def compute_accuracy(X, y, W, b):
 
 
 # Seventh step, write the function that evaluates, for a mini-batch, the gradients of the cost function w.r.t W and b
-def compute_gradients(X, Y, P, W, lamb, verbose=False):
+def compute_gradients(X, Y, W1, W2, b1, b2, lamb, verbose=False):
     print('<| Compute gradient analytically [fast]:') if verbose else None
     """
     Each column of X corresponds to an image, and X has size d x n.
     Each column of Y is the one-hot ground truth label for the corresponding column of X, and Y has size K x n.
     Each column of P contains the probability for each label for the image in the corresponding column of X,
         and P has size K x n.
-    grad_W is the gradient matrix of the cost J relative to W and has size K x d.
-    grad_b is the gradient vector of the cost J relative to b and has size K x 1.
     """
+    P, H = evaluate_classifier(X, W1, W2, b1, b2)
+
     if len(X.shape) < 2:
         X = np.asmatrix(X).T
     len_D = X.shape[1]
     if len(Y.shape) < 2:
         Y = np.asmatrix(Y).T
-    # Equation 11, which calculates the gradient w.r.t b
-    # 1. Evaluate P = softmax(Wx + b)
-    # 2. let g = -(y-p)^T
-    # 3. Add gradient of l(x, y, W, b) w.r.t b
-    #           dL/db += g
+
+    # 1. Set
     g_batch = -(Y - P)
-    grad_b = g_batch / len_D
-    grad_b = np.sum(grad_b, axis=1)
-    if len(grad_b.shape) < 2:
-        grad_b = np.asmatrix(grad_b).T
-    grad_W = 2*lamb*W + (g_batch@X.T) / len_D
 
-    assert grad_W.shape == (10, 3072)
-    assert grad_b.shape == (10, 1)
+    # 2. Then
+    grad_b2 = np.sum(g_batch / len_D, axis=1)
+    if len(grad_b2.shape) < 2:
+        grad_b2 = np.asmatrix(grad_b2).T
+    grad_W2 = 2*lamb*W2 + g_batch@H.T / len_D
 
-    return grad_W, grad_b
+    # 3. Propagate the gradient back through the second layer
+    g_batch = W2.T@g_batch
+    g_batch = np.multiply(g_batch, H > 0)
 
+    # 4. Then
+    grad_W1 = 2*lamb*W1 + (g_batch@X.T) / len_D
+    grad_b1 = np.sum(g_batch / len_D, axis=1)
+    if len(grad_b1.shape) < 2:
+        grad_b1 = np.asmatrix(grad_b1).T
 
-# Use the 'functions.py' grad func to compare by calculations, not written by me ---------------------------------------
-def computeGradsNum(X, Y, P, W, b, lamda, h):
-    """ Converted from matlab code """
-    no = W.shape[0]
-    d = X.shape[0]
+    assert grad_W1.shape == (50, 3072)
+    assert grad_W2.shape == (10, 50)
+    assert grad_b1.shape == (50, 1)
+    assert grad_b2.shape == (10, 1)
 
-    grad_W = np.zeros(W.shape);
-    grad_b = np.zeros((no, 1));
-
-    c = compute_cost(X, Y, W, b, lamda);
-
-    for i in range(len(b)):
-        b_try = np.array(b)
-        b_try[i] += h
-        c2 = compute_cost(X, Y, W, b_try, lamda)
-        grad_b[i] = (c2 - c) / h
-
-    return [grad_W, grad_b]
-# ----------------------------------------------------------------------------------------------------------------------
-
-
-# Use the 'functions.py' slow grad func to compare to analytical, not written by me ------------------------------------
-def computeGradsNumSlow(X, Y, P, W, b, lamda, h):
-    print('<| Compute gradient numerically [slow] :')
-    """ Converted from matlab code """
-    no = W.shape[0]
-    d = X.shape[0]
-
-    grad_W = np.zeros(W.shape);
-    grad_b = np.zeros((no, 1));
-
-    for i in range(len(b)):
-        b_try = np.array(b)
-        b_try[i] -= h
-        c1 = compute_cost(X, Y, W, b_try, lamda)
-
-        b_try = np.array(b)
-        b_try[i] += h
-        c2 = compute_cost(X, Y, W, b_try, lamda)
-
-        grad_b[i] = (c2 - c1) / (2 * h)
-
-    for i in range(W.shape[0]):
-        for j in range(W.shape[1]):
-            W_try = np.array(W)
-            W_try[i, j] -= h
-            c1 = compute_cost(X, Y, W_try, b, lamda)
-
-            W_try = np.array(W)
-            W_try[i, j] += h
-            c2 = compute_cost(X, Y, W_try, b, lamda)
-
-            grad_W[i, j] = (c2 - c1) / (2 * h)
-
-    return [grad_W, grad_b]
-# ----------------------------------------------------------------------------------------------------------------------
+    return grad_W1, grad_W2, grad_b1, grad_b2
 
 
 # You should compare your analytical gradient with the numerical gradient by examining their
@@ -258,6 +232,38 @@ def plot_loss(training_loss, eval_loss):
     plt.show()
 
 
+def compute_grads_slow(X, Y, W1, W2, b1, b2, lamb, h=1e-4):
+    W_l, b_l = [W1, W2], [b1, b2]
+    grad_W_l, grad_b_l = [0, 0], [0, 0]
+    for j in range(len(b_l)):
+        grad_b_l[j] = np.zeros(shape=b_l[j].shape)
+        for i in range(len(b_l[j])):
+            b_try = b_l
+            b_try[j][i] = b_try[j][i] - h
+            c1, _ = compute_cost(X, Y, W_l[0], W_l[1], b_try[0], b_try[1], lamb)
+
+            b_try = b_l
+            b_try[j][i] = b_try[j][i] + h
+            c2, _ = compute_cost(X, Y, W_l[0], W_l[1], b_try[0], b_try[1], lamb)
+
+            grad_b_l[j][i] = (c2 - c1) / (2*h)
+
+    for j in range(len(W_l)):
+        grad_W_l[j] = np.zeros(shape=W_l[j].shape)
+        for i in range(len(W_l[j])):
+            W_try = W_l
+            W_try[j][i] = W_try[j][i] - h
+            c1, _ = compute_cost(X, Y, W_try[0], W_try[1], b_l[0], b_l[1], lamb)
+
+            W_try = W_l
+            W_try[j][i] = W_try[j][i] + h
+            c2, _ = compute_cost(X, Y, W_try[0], W_try[1], b_l[0], b_l[1], lamb)
+
+            grad_W_l[j][i] = (c2 - c1) / (2*h)
+
+    return grad_W_l[0], grad_W_l[1], grad_b_l[0], grad_b_l[1]
+
+
 if __name__ == '__main__':
     # http://www.cs.toronto.edu/~kriz/cifar.html
     data = loadBatch('data_batch_1')
@@ -265,21 +271,11 @@ if __name__ == '__main__':
     X, Y, y = parse_data(data, True)
     eval_X, eval_Y, eval_y = parse_data(loadBatch('data_batch_2'), True)
     X, eval_X = preprocess_data(X), preprocess_data(eval_X)
-    W, b = initialize_params(Y.shape[0], X.shape[0], True)
-    batch_n, lamb = 100, 0
-    learning_rate, n_epochs = 0.1, 40
+    hid_nodes = 50  # m
+    W1, W2, b1, b2 = initialize_params(Y.shape[0], X.shape[0], hid_nodes, True)
+    batch_n, lamb = 20, 0
+    learning_rate, n_epochs = 0.001, 40
     params = {'n_batch': batch_n, 'eta': learning_rate, 'n_epochs': n_epochs}
-    W_upd, b_upd, training_loss, eval_loss = minibatch_GD(X, Y, params, W, b, lamb, eval_X, eval_Y)
-    print(training_loss)
-    print(eval_loss)
-    plot_loss(training_loss, eval_loss)
-    save_params = True
-    if save_params:
-        with open('params.npy', 'wb') as f:
-            np.save(f, W_upd)
-            np.save(f, b_upd)
-    montage(W_upd)
-    # Calculate the test accuracy, now that we have our given network parameters W and b.
-    test_X, test_Y, test_y = parse_data(loadBatch('test_batch'), True)
-    test_X = preprocess_data(test_X)
-    print('<| Final test acc: [{}]'.format(compute_accuracy(test_X, test_y, W_upd, b_upd)))
+    grad_W1, grad_W2, grad_b1, grad_b2 = compute_gradients(X[:, :batch_n], Y[:, :batch_n], W1, W2, b1, b2, lamb)
+    gw1, gw2, gb1, gb2 = compute_grads_slow(X[:, :batch_n], Y[:, :batch_n], W1, W2, b1, b2, lamb)
+    print(compare_gradients(grad_b2, gb2))
