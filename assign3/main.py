@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 
 # ======================================================================================================================
 def parse_data(dset, verbose=False):
-    print('<| Parse data from batch:')
     """
     reformat the given dataset such that it returns the data, the one-hot encoded labels,
     and the labels.
@@ -51,6 +50,8 @@ def preprocess_data(x):
 def softmax(x):
     """ Standard definition of the softmax function """
     return np.exp(x) / np.sum(np.exp(x), axis=0)
+
+
 # ======================================================================================================================
 
 
@@ -83,9 +84,13 @@ class KNN:
         self.num_layers = num_layers
         self.num_nodes = num_nodes
         self.k = len(num_nodes)
+        self.num_samples = 0
         self.verbose = verbose
 
     def parse_full_data(self, val_split=5000):
+        if self.verbose:
+            print('<| Parsing all of the batches...')
+
         dataX, dataY, datay = parse_data(load_batch('data_batch_1'))
         dataX2, dataY2, datay2 = parse_data(load_batch('data_batch_2'))
         dataX3, dataY3, datay3 = parse_data(load_batch('data_batch_3'))
@@ -101,13 +106,16 @@ class KNN:
         self.X_eval = preprocess_data(eval_X)
         self.Y_eval = eval_Y
         self.y_eval = eval_y
+        self.num_samples = X.shape[1]
 
-        if self.verbose:
-            print('<| Parsing all of the batches...')
+        test_X, test_Y, test_y = parse_data(load_batch('test_batch'))
+        self.X_test = preprocess_data(test_X)
+        self.Y_test = test_Y
+        self.y_test = test_y
 
     def initialize_params(self):
         assert self.num_layers == len(self.num_nodes) + 1, print(f'<| ERROR: num_layers={self.num_layers} '
-                                                                 f'and we got {len(self.num_nodes)} hidden nodes...' )
+                                                                 f'and we got {len(self.num_nodes)} hidden nodes...')
         #  K = Y.shape[0], d = X.shape[0], m = hid_nodes
 
         # The first weight matrix will always have size (m, d). Where m = num_nodes[0]
@@ -132,34 +140,64 @@ class KNN:
                 print(f'\tthe shape of b{idx + 1}: {b.shape}')
         return
 
-    def forward_pass(self):
+    def forward_pass(self, X=None):
         # assign a temporary variable which holds the propagated input
-        X_tmp = self.X
-        S = 0
+        if X is None:
+            X = self.X
+        # Transform the data to a matrix
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        S, X_tmp = [], [X]
         for i in range(self.num_layers):
-            S= self.W[i] @ X_tmp + self.b[i]
-            X_tmp = np.maximum(0, S)
+            S.append(self.W[i] @ X_tmp[i] + self.b[i])
+            X_tmp.append(np.maximum(0, S[-1]))
         # Apply the final linear transformation
-        S = self.W[self.k] @ X_tmp + self.b[self.k]
-        # Apply softmax operation to turn final scores into probabilties
-        P = softmax(S)
-        return P
+        S.append(self.W[-1] @ X_tmp[-2] + self.b[-1])
+        # Apply softmax operation to turn final scores into probabilities
+        P = softmax(S[-1])
+        return P, S
 
-    def compute_cost(self):
-        reg_sum = 0
+    def compute_cost(self, X, Y):
+
+        assert len(Y.shape) > 1, print('<| ERROR: labels are not one-hot encoded...')
+        # Transform the data to a matrix
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        loss_sum, reg_sum = 0, 0
         for w in self.W:
-            reg_sum += self.lamda * np.sum(w**2)
-            pass
+            reg_sum += self.lamda * np.sum(w ** 2)
+        for col in range(X.shape[1]):
+            P, _ = self.forward_pass(X[:, col])
+            loss_sum += -np.log(np.dot(Y.T, P))
+        cost = loss_sum / self.num_samples + reg_sum
+        return cost[0, 0], (loss_sum / self.X.shape[1])[0, 0]
+
+    def compute_acc(self, X, y, label='training'):
+        # Transform the data to a matrix
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        correct = 0
+        P, _ = self.forward_pass(X)
+        for k in range(y.shape[0]):
+            pred = np.argmax(P[:, k])
+            if pred == y[k]:
+                correct += 1
+
+        if self.verbose:
+            print(f'<| Computed {label} accuracy on {self.num_layers}-NN is: {(round(correct / y.shape[0], 4))*100}%')
+
+        return correct / y.shape[0]
 
 
 def main():
     knn = KNN(X=None, Y=None, y=None,
-                 X_eval=None, Y_eval=None, y_eval=None,
-                 X_test=None, Y_test=None, y_test=None,
-                 batch_size=0, n_epochs=1, eta=0, lamda=0,
-                num_layers=4, num_nodes=[50, 30, 20], verbose=True)
+              X_eval=None, Y_eval=None, y_eval=None,
+              X_test=None, Y_test=None, y_test=None,
+              batch_size=0, n_epochs=1, eta=0, lamda=0.1,
+              num_layers=4, num_nodes=[50, 30, 20], verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
+    knn.compute_acc(knn.X_eval, knn.y_eval, label='validation')
 
 
 if __name__ == '__main__':
