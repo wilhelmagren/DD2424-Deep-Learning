@@ -1,6 +1,6 @@
 """
 Author: Wilhelm Ågren, wagren@kth.se
-Last edited: 31/3/2021
+Last edited: 10/04/2021
 """
 
 from functions import *
@@ -47,7 +47,8 @@ def preprocess_data(x):
 def initialize_params(K, d, verbose=False):
     print('<| Initialize params :')
     W = np.random.normal(0, 0.01, size=(K, d))
-    b = np.random.normal(0, 0.01, size=(K, 1))
+    b = np.zeros(shape=(K, 1))
+    # b = np.random.normal(0, 0.01, size=(K, 1))
 
     if verbose:
         print('\tthe shape of W:', W.shape)
@@ -90,7 +91,7 @@ def compute_cost(X, Y, W, b, lamb):
     loss_sum = 0
     for col in range(num_points):
         loss_sum += l_cross(X[:, col], Y[:, col], W, b)
-    cost = (loss_sum + regularization_sum) / num_points
+    cost = loss_sum/num_points + regularization_sum
 
     # Cost becomes a 1 x 1 matrix but J is supposed to be a scalar, so return only the scalar value
     return cost[0, 0]
@@ -136,8 +137,7 @@ def compute_gradients(X, Y, P, W, lamb, verbose=False):
     # 3. Add gradient of l(x, y, W, b) w.r.t b
     #           dL/db += g
     g_batch = -(Y - P)
-    grad_b = g_batch / len_D
-    grad_b = np.sum(grad_b, axis=1)
+    grad_b = np.reshape(1/(X.shape[1] * g_batch@np.ones(X.shape[1])), (10, 1))
     if len(grad_b.shape) < 2:
         grad_b = np.asmatrix(grad_b).T
     grad_W = 2*lamb*W + (g_batch@X.T) / len_D
@@ -189,7 +189,7 @@ def computeGradsNumSlow(X, Y, P, W, b, lamda, h):
         c2 = compute_cost(X, Y, W, b_try, lamda)
 
         grad_b[i] = (c2 - c1) / (2 * h)
-
+    print('halfway there, sort of')
     for i in range(W.shape[0]):
         for j in range(W.shape[1]):
             W_try = np.array(W)
@@ -202,7 +202,7 @@ def computeGradsNumSlow(X, Y, P, W, b, lamda, h):
 
             grad_W[i, j] = (c2 - c1) / (2 * h)
 
-    return [grad_W, grad_b]
+    return grad_W, grad_b
 # ----------------------------------------------------------------------------------------------------------------------
 
 
@@ -261,14 +261,23 @@ def plot_loss(training_loss, eval_loss):
 if __name__ == '__main__':
     # http://www.cs.toronto.edu/~kriz/cifar.html
     data = loadBatch('data_batch_1')
-    np.random.seed(69)
+    # np.random.seed(69)
     X, Y, y = parse_data(data, True)
     eval_X, eval_Y, eval_y = parse_data(loadBatch('data_batch_2'), True)
     X, eval_X = preprocess_data(X), preprocess_data(eval_X)
     W, b = initialize_params(Y.shape[0], X.shape[0], True)
-    batch_n, lamb = 100, 0
-    learning_rate, n_epochs = 0.1, 40
+    batch_n, lamb = 100, 0.1
+    learning_rate, n_epochs = 0.001, 40
     params = {'n_batch': batch_n, 'eta': learning_rate, 'n_epochs': n_epochs}
+    """
+    # COMPARE GRADIENTS
+    P = evaluate_classifier(X[:, :20], W, b)
+    gradw, gradb = compute_gradients(X[:, :20], Y[:, :20], P, W, lamb)
+    slow_w, slow_b = computeGradsNumSlow(X[:, :20], Y[:, :20], P, W, b, lamb, 1e-4)
+    print(gradw)
+    print(slow_w)
+    print(compare_gradients(gradw, slow_w))
+    """
     W_upd, b_upd, training_loss, eval_loss = minibatch_GD(X, Y, params, W, b, lamb, eval_X, eval_Y)
     print(training_loss)
     print(eval_loss)

@@ -1,0 +1,90 @@
+<| | | | | | | | | | | |
+lambda=1e-05
+Validation loss: 1.4225350503180028
+Validation acc: 0.5052
+Test acc: 0.4872
+
+<| | | | | | | | | | | |
+lambda=3e-05
+Validation loss: 1.4167861214650443
+Validation acc: 0.5078
+Test acc: 0.4934
+
+<| | | | | | | | | | | |
+lambda=5e-05
+Validation loss: 1.4122623379597499
+Validation acc: 0.5134
+Test acc: 0.4938
+
+<| | | | | | | | | | | |
+lambda=8e-05
+Validation loss: 1.4173857488464916
+Validation acc: 0.504
+Test acc: 0.4889
+
+<| | | | | | | | | | | |
+lambda=0.0001
+Validation loss: 1.407234542600532
+Validation acc: 0.507
+Test acc: 0.4901
+
+<| | | | | | | | | | | |
+lambda=0.0003
+Validation loss: 1.4095860055491074
+Validation acc: 0.5152
+Test acc: 0.491
+
+<| | | | | | | | | | | |
+lambda=0.0005
+Validation loss: 1.427175760905137
+Validation acc: 0.5038
+Test acc: 0.4972
+
+<| | | | | | | | | | | |
+lambda=0.0008
+Validation loss: 1.4069302052160475
+Validation acc: 0.5096
+Test acc: 0.4959
+
+<| | | | | | | | | | | |
+lambda=0.001
+Validation loss: 1.4027760040630926
+Validation acc: 0.5186
+Test acc: 0.5003
+
+<| | | | | | | | | | | |
+lambda=0.003
+Validation loss: 1.384590801258946
+Validation acc: 0.5152
+Test acc: 0.4992
+
+<| | | | | | | | | | | |
+lambda=0.005
+Validation loss: 1.3816174745752812
+Validation acc: 0.5196
+Test acc: 0.5064
+
+<| | | | | | | | | | | |
+lambda=0.008
+Validation loss: 1.398259169976141
+Validation acc: 0.5138
+Test acc: 0.502
+
+<| | | | | | | | | | | |
+lambda=0.01
+Validation loss: 1.4097103204374972
+Validation acc: 0.5064
+Test acc: 0.5027
+
+<| | | | | | | | | | | |
+lambda=0.03
+Validation loss: 1.5305818440241508
+Validation acc: 0.4748
+Test acc: 0.4716
+
+<| | | | | | | | | | | |
+lambda=0.05
+Validation loss: 1.632286876088992
+Validation acc: 0.4392
+Test acc: 0.4403
+
