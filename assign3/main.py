@@ -62,14 +62,6 @@ def batch_normalize(S, mu, V, eps=1e-4):
 # noinspection PyTypeChecker
 class KNN:
 
-    def __new__(cls, X=None, Y=None, y=None,
-                 X_eval=None, Y_eval=None, y_eval=None,
-                 X_test=None, Y_test=None, y_test=None,
-                 batch_size=0, n_epochs=1, eta=0, lamda=0,
-                 num_layers=0, num_nodes=None, verbose=False):
-        instance = super().__new__(cls)
-        return instance
-
     def __init__(self, X=None, Y=None, y=None,
                  X_eval=None, Y_eval=None, y_eval=None,
                  X_test=None, Y_test=None, y_test=None,
@@ -135,6 +127,11 @@ class KNN:
         self.X_test = preprocess_data(test_X)
         self.Y_test = test_Y
         self.y_test = test_y
+
+        if self.verbose:
+            print(f'\t\tThe shape of X: {self.X.shape}')
+            print(f'\t\tThe shape of X_eval: {self.X_eval.shape}')
+            print(f'\t\tThe shape of X_test: {self.X_test.shape}')
 
     def initialize_params(self, d=None):
         """
@@ -266,6 +263,7 @@ class KNN:
         # Transform the data to a matrix
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
+
         loss_sum, reg_sum = 0, 0
         for w in self.W:
             reg_sum += self.lamda * np.sum(w ** 2)
@@ -273,9 +271,9 @@ class KNN:
         P, _, _ = self.forward_pass(X)
         for col in range(X.shape[1]):
             loss_sum += -np.log(np.dot(Y[:, col].T, P[:, col]))
-        cost = loss_sum / self.num_samples + reg_sum
-
-        return cost, (loss_sum / self.X.shape[1])
+        loss = loss_sum / X.shape[1]
+        cost = loss + reg_sum
+        return cost, loss
 
     def compute_acc(self, X, y, label='training', verbose=False):
         """
@@ -299,7 +297,7 @@ class KNN:
 
         return correct / y.shape[0]
 
-    def fit(self, X, Y):
+    def fit(self, X, Y, y):
         cost_training, loss_training, cost_eval, loss_eval, acc_t, eta_l, acc_e = [], [], [], [], [], [], []
         learning_rate, eta_min, eta_max, l, t = 1e-3, 1e-5, 1e-1, 0, 1
         num_cycle, n_s = 2, 5 * 45000 / self.batch_size
@@ -315,13 +313,12 @@ class KNN:
         cost_eval.append(e_c)
         loss_eval.append(e_l)
         # Accuracy
-        acc_t.append(self.compute_acc(X, self.y, label='training'))
+        acc_t.append(self.compute_acc(X, y, label='training'))
         acc_e.append(self.compute_acc(self.X_eval, self.y_eval, label='validation'))
         # --------------------------------------------------------------------------------------------------------------
-        for i in tqdm(range(self.n_epochs)):
+        for _ in tqdm(range(self.n_epochs)):
             if breakk:
                 break
-            #print(f'<| Epoch [{i + 1}]')
             for j in range(int(X.shape[1]/self.batch_size)):
                 if 2 * l * n_s <= t <= (2 * l + 1) * n_s:
                     # Learning increasing
@@ -338,7 +335,6 @@ class KNN:
                     self.W[idx] += -learning_rate*grad_W
                     self.b[idx] += -learning_rate*grad_b_l[idx]
                 if t >= 2 * num_cycle * n_s:
-                    print('<| we gotta break bro')
                     breakk = True
                     break
                 # We reached the bottom after having been at the top of the cycle, so increase l
@@ -355,10 +351,12 @@ class KNN:
             cost_eval.append(e_c)
             loss_eval.append(e_l)
             # Accuracy
-            acc_t.append(self.compute_acc(X, self.y, label='training'))
+            acc_t.append(self.compute_acc(X, y, label='training'))
             acc_e.append(self.compute_acc(self.X_eval, self.y_eval, label='validation'))
-            print('')
         return cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l
+
+    def evaluate(self, X_test, y_test):
+        self.compute_acc(X_test, y_test, label='testing', verbose=True)
 
     def __del__(self):
         """
@@ -407,19 +405,16 @@ class KNN:
 
 def main():
     np.random.seed(69)
-    knn = KNN(X=None, Y=None, y=None,
-              X_eval=None, Y_eval=None, y_eval=None,
-              X_test=None, Y_test=None, y_test=None,
-              batch_size=100, n_epochs=24, eta=1e-4, lamda=5e-3,
-              num_layers=2, num_nodes=[50], verbose=True)
+    knn = KNN(batch_size=100, n_epochs=20, eta=1e-4, lamda=5e-3,
+              num_layers=9, num_nodes=[50, 30, 20, 20, 10, 10, 10, 10], verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
-    cost, loss = knn.compute_cost(knn.X, knn.Y)
-    cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y)
+    cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y, knn.y)
     knn.plot(cost_training, cost_eval, 'cost')
     knn.plot(loss_training, loss_eval, 'loss')
     knn.plot(acc_t, acc_e, 'accuracy')
     knn.plot(eta_l, [], 'learning rate')
+    knn.evaluate(knn.X_test, knn.y_test)
     # knn.compute_acc(knn.X_eval, knn.y_eval, label='validation')
 
 
