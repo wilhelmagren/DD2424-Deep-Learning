@@ -4,6 +4,7 @@ Last edited: 19/04/2021
 """
 
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -51,8 +52,10 @@ def softmax(x):
     """ Standard definition of the softmax function """
     return np.exp(x) / np.sum(np.exp(x), axis=0)
 
-def batch_normalize(S, mu, V):
-    pass
+
+def batch_normalize(S, mu, V, eps=1e-4):
+    V = np.array(V)
+    return (S - mu)/np.sqrt(np.diag(V + eps))
 # ======================================================================================================================
 
 
@@ -70,7 +73,7 @@ class KNN:
     def __init__(self, X=None, Y=None, y=None,
                  X_eval=None, Y_eval=None, y_eval=None,
                  X_test=None, Y_test=None, y_test=None,
-                 batch_size=0, n_epochs=1, eta=0, lamda=0,
+                 batch_size=0, n_epochs=1, eta=0.0, lamda=0.0,
                  num_layers=0, num_nodes=None, verbose=False):
         if num_nodes is None:
             num_nodes = []
@@ -92,8 +95,13 @@ class KNN:
         self.lamda = lamda
         self.num_layers = num_layers
         self.num_nodes = num_nodes
-        self.k = len(num_nodes)
+        self.hidden_layers = num_layers - 1
         self.num_samples = 0
+        # Initialize the gamma and beta hyperparameters used for batch normalization
+        self.gamma = [1 for _ in range(len(num_nodes))]
+        self.beta = [0 for _ in range(len(num_nodes))]
+        self.grad_w = None
+        self.grad_b = None
         self.verbose = verbose
 
     def parse_full_data(self, val_split=5000):
@@ -159,6 +167,9 @@ class KNN:
                 print(f'\t\tthe shape of b{idx + 1}: {b.shape}')
         return
 
+    def compute_gradient(self):
+        pass
+
     def forward_pass(self, X=None):
         """
         func forward_pass/2
@@ -166,6 +177,33 @@ class KNN:
             Performs the forward pass of the network model, which corresponds to evaluating the network.
             Simply propagate your initial data through the network and perform all calculations with the
             model parameters W and b. Keep track of your updated scores S and data points X.
+        """
+
+        # assign a temporary variable which holds the propagated input
+        if X is None:
+            X = self.X
+        # Transform the data to a matrix
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        X_tmp = X
+        S, H = [], []
+        for i in range(self.hidden_layers):
+            # This is the un-normalized score for layer l
+            S.append(self.W[i] @ X_tmp + self.b[i])
+            H.append(np.maximum(0, S[-1]))
+            X_tmp = H[-1]
+        # Apply the final linear transformation
+        S.append(self.W[-1] @ H[-1] + self.b[-1])
+        # Apply softmax operation to turn final scores into probabilities
+        P = softmax(S[-1])
+
+        return P, S, H
+
+    def forward_pass_BN(self, X=None):
+        """
+        func forward_pass_BN/2
+        @spec (self, np.array()) :: np.array(), np.array()
+            Performs the forward pass of the network model, with batch normalization.
             TODO: Add Batch Normalization to the forward pass. So what we have to do is normalize the scores at each
                   layer, but you compute the mean and variances of the un-normalized scores from the data in the
                   mini-batch. Assume we have a mini-batch of data B = {(x1, y1), ..., (xn, yn)}. At each layer
@@ -177,30 +215,43 @@ class KNN:
                         v_j^l = 1/n SUM{from i=1 => n} (s_ij^l - mu_j^l)^2     , for j = 1, ..., m_l
                   where m_l is the dimension of the scores at layer l.
         """
-
         # assign a temporary variable which holds the propagated input
         if X is None:
             X = self.X
         # Transform the data to a matrix
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
+        X_l, S_l, S_norm_l = [], [], []
         # TODO: we need vectors or matrices for the mean and variance of the scores S
-        S, S_norm, X_tmp, mu, var = [], [], [X], [], [[] for _ in range(self.num_layers)]
-        for i in range(self.num_layers):
-            # This is the un-normalized score for layer l
-            S.append(self.W[i] @ X_tmp[i] + self.b[i])
-            # TODO: Calculate mean and variance so we can normalize
-            mu.append((np.sum(S[i], axis=0))/X.shape[1])
-            for j in range(S[-1].shape[0]):
-                var[i].append((np.sum((S[i][j] - mu[i][j])**2))/X.shape[1])
-            S_norm.append(batch_normalize(S[i], mu[i], var[i]))
-            X_tmp.append(np.maximum(0, S[-1]))
-        # Apply the final linear transformation
-        S.append(self.W[-1] @ X_tmp[-2] + self.b[-1])
-        # Apply softmax operation to turn final scores into probabilities
-        P = softmax(S[-1])
+        pass
 
-        return P, S
+    def backward_pass(self, X, Y):
+
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        if len(Y.shape) < 2:
+            Y = np.asmatrix(Y).T
+
+        P_batch, S_batch, X_l = self.forward_pass(X)
+        grad_W_l, grad_b_l = [], []
+
+        G_batch = -(Y - P_batch)
+        for l in range(self.hidden_layers, 0, -1):
+            grad_W_l.append((G_batch @ X_l[l - 1].T) / X_l[l - 1].shape[1] + 2*self.lamda*self.W[l])
+            grad_b_l.append(np.reshape((1 / X.shape[1]) * G_batch @ np.ones(X.shape[1]), (self.b[l].shape[0], 1)))
+            G_batch = self.W[l].T @ G_batch
+            G_batch = np.multiply(G_batch, X_l[l - 1] > 0)
+
+        grad_W_l.append(((G_batch@X.T) / X.shape[1]) + 2*self.lamda*self.W[0])
+        grad_b_l.append(np.reshape((1 / X.shape[1]) * G_batch @ np.ones(X.shape[1]), (self.b[0].shape[0], 1)))
+
+        # Does this even work?
+        grad_W_l.reverse()
+        grad_b_l.reverse()
+        self.grad_w = grad_W_l
+        self.grad_b = grad_b_l
+
+        return grad_W_l, grad_b_l
 
     def compute_cost(self, X, Y):
         """
@@ -218,13 +269,15 @@ class KNN:
         loss_sum, reg_sum = 0, 0
         for w in self.W:
             reg_sum += self.lamda * np.sum(w ** 2)
-        for col in range(X.shape[1]):
-            P, _ = self.forward_pass(X[:, col])
-            loss_sum += -np.log(np.dot(Y.T, P))
-        cost = loss_sum / self.num_samples + reg_sum
-        return cost[0, 0], (loss_sum / self.X.shape[1])[0, 0]
 
-    def compute_acc(self, X, y, label='training'):
+        P, _, _ = self.forward_pass(X)
+        for col in range(X.shape[1]):
+            loss_sum += -np.log(np.dot(Y[:, col].T, P[:, col]))
+        cost = loss_sum / self.num_samples + reg_sum
+
+        return cost, (loss_sum / self.X.shape[1])
+
+    def compute_acc(self, X, y, label='training', verbose=False):
         """
         func compute_acc/4
         @spec (self, np.array(), np.array(), str) :: float
@@ -235,16 +288,77 @@ class KNN:
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
         correct = 0
-        P, _ = self.forward_pass(X)
+        P, _, _ = self.forward_pass(X)
         for k in range(y.shape[0]):
             pred = np.argmax(P[:, k])
             if pred == y[k]:
                 correct += 1
 
-        if self.verbose:
+        if verbose:
             print(f'<| Computed {label} accuracy on {self.num_layers}-NN is: {(round(correct / y.shape[0], 4))*100}%')
 
         return correct / y.shape[0]
+
+    def fit(self, X, Y):
+        cost_training, loss_training, cost_eval, loss_eval, acc_t, eta_l, acc_e = [], [], [], [], [], [], []
+        learning_rate, eta_min, eta_max, l, t = 1e-3, 1e-5, 1e-1, 0, 1
+        num_cycle, n_s = 2, 5 * 45000 / self.batch_size
+        breakk = False
+        assert (X.shape[1] % self.batch_size == 0), print('<| CAN NOT SPLIT DATA ACCORDINGLY')
+        # --------------------------------------------------------------------------------------------------------------
+        # Training loss
+        t_c, t_l = self.compute_cost(X, Y)
+        cost_training.append(t_c)
+        loss_training.append(t_l)
+        # Eval loss
+        e_c, e_l = self.compute_cost(self.X_eval, self.Y_eval)
+        cost_eval.append(e_c)
+        loss_eval.append(e_l)
+        # Accuracy
+        acc_t.append(self.compute_acc(X, self.y, label='training'))
+        acc_e.append(self.compute_acc(self.X_eval, self.y_eval, label='validation'))
+        # --------------------------------------------------------------------------------------------------------------
+        for i in tqdm(range(self.n_epochs)):
+            if breakk:
+                break
+            #print(f'<| Epoch [{i + 1}]')
+            for j in range(int(X.shape[1]/self.batch_size)):
+                if 2 * l * n_s <= t <= (2 * l + 1) * n_s:
+                    # Learning increasing
+                    learning_rate = eta_min + (eta_max - eta_min) * (t - 2 * l * n_s) / n_s
+                elif (2 * l + 1) * n_s <= t <= 2 * (l + 1) * n_s:
+                    # Learning rate decreasing
+                    learning_rate = eta_max - (t - (2 * l + 1) * n_s) * (eta_max - eta_min) / n_s
+
+                j_start, j_end = j * self.batch_size, (j + 1) * self.batch_size
+                X_batch = X[:, j_start:j_end]
+                Y_batch = Y[:, j_start:j_end]
+                grad_W_l, grad_b_l = self.backward_pass(X_batch, Y_batch)
+                for idx, grad_W in enumerate(grad_W_l):
+                    self.W[idx] += -learning_rate*grad_W
+                    self.b[idx] += -learning_rate*grad_b_l[idx]
+                if t >= 2 * num_cycle * n_s:
+                    print('<| we gotta break bro')
+                    breakk = True
+                    break
+                # We reached the bottom after having been at the top of the cycle, so increase l
+                if t % (2 * n_s) == 0:
+                    l += 1
+                t += 1
+                eta_l.append(learning_rate)
+            # Training loss
+            t_c, t_l = self.compute_cost(X, Y)
+            cost_training.append(t_c)
+            loss_training.append(t_l)
+            # Eval loss
+            e_c, e_l = self.compute_cost(self.X_eval, self.Y_eval)
+            cost_eval.append(e_c)
+            loss_eval.append(e_l)
+            # Accuracy
+            acc_t.append(self.compute_acc(X, self.y, label='training'))
+            acc_e.append(self.compute_acc(self.X_eval, self.y_eval, label='validation'))
+            print('')
+        return cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l
 
     def __del__(self):
         """
@@ -275,16 +389,37 @@ class KNN:
             return super().__repr__()
         return str(self)
 
+    @staticmethod
+    def plot(training_loss, eval_loss, label):
+        plt.plot([i for i in range(len(training_loss))], training_loss, color='green', linewidth=2, label='training')
+        if eval_loss:
+            plt.plot([i for i in range(len(eval_loss))], eval_loss, color='red', linewidth=2, label='validation')
+        plt.xlabel('epoch')
+        plt.ylabel(label)
+        if label == 'accuracy':
+            plt.ylim(top=1)
+            plt.ylim(bottom=0)
+        else:
+            plt.ylim(bottom=0)
+        plt.legend()
+        plt.show()
+
 
 def main():
+    np.random.seed(69)
     knn = KNN(X=None, Y=None, y=None,
               X_eval=None, Y_eval=None, y_eval=None,
               X_test=None, Y_test=None, y_test=None,
-              batch_size=0, n_epochs=1, eta=0, lamda=0.1,
-              num_layers=4, num_nodes=[50, 30, 20], verbose=True)
+              batch_size=100, n_epochs=24, eta=1e-4, lamda=5e-3,
+              num_layers=2, num_nodes=[50], verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
-    P, S = knn.forward_pass()
+    cost, loss = knn.compute_cost(knn.X, knn.Y)
+    cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y)
+    knn.plot(cost_training, cost_eval, 'cost')
+    knn.plot(loss_training, loss_eval, 'loss')
+    knn.plot(acc_t, acc_e, 'accuracy')
+    knn.plot(eta_l, [], 'learning rate')
     # knn.compute_acc(knn.X_eval, knn.y_eval, label='validation')
 
 
