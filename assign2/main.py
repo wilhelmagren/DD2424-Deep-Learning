@@ -1,9 +1,10 @@
 """
 Author: Wilhelm Ågren, wagren@kth.se
-Last edited: 13/04/2021
+Last edited: 21/04/2021
 """
 
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -49,9 +50,11 @@ def parse_data(dset, verbose=False):
 
 
 # Second step, now preprocess the raw input data such that it helps training.
-def preprocess_data(x):
+def preprocess_data(x, xx):
     print('<| Preprocess X data :')
-    normalized = (x - x.mean(axis=0)) / x.std(axis=0)
+    train_variance = x.std(axis=1).reshape(x.shape[0], 1)
+    train_mean = x.mean(axis=1).reshape(x.shape[0], 1)
+    normalized = (xx - train_mean) / train_variance
     return normalized
 
 
@@ -206,7 +209,7 @@ def compare_gradients(g_a, g_n, verbose=False, eps=1e-6):
 # Implement vanilla batch learning, no adaptive tuning of the learning parameter or momentum terms.
 def minibatch_GD(X, Y, GDparams, W1, W2, b1, b2, lamb, eval_X, eval_Y, num_cycle, verbose=False):
     cost_training, loss_training, cost_eval, loss_eval, acc_t, eta_l, acc_e = [], [], [], [], [], [], []
-    eta_min, eta_max, n_s, l, t, learning_rate = 1e-5, 1e-1, 2 * 450, 0, 1, GDparams['eta']
+    eta_min, eta_max, n_s, l, t, learning_rate = 1e-5, 1e-1, 500, 0, 1, GDparams['eta']
     n_batch, n_epochs = GDparams['n_batch'], GDparams['n_epochs']
     breakk = False
     assert (X.shape[1] % n_batch == 0), print('<| CAN NOT SPLIT DATA ACCORDINGLY')
@@ -223,10 +226,9 @@ def minibatch_GD(X, Y, GDparams, W1, W2, b1, b2, lamb, eval_X, eval_Y, num_cycle
     acc_t.append(compute_accuracy(X, y, W1, W2, b1, b2))
     acc_e.append(compute_accuracy(eval_X, eval_y, W1, W2, b1, b2))
     # ------------------------------------------------------------------------------------------------------------------
-    for i in range(n_epochs):
+    for _ in tqdm(range(n_epochs)):
         if breakk:
             break
-        print('<| Epoch [{}]'.format(i + 1))
         for j in range(int(X.shape[1] / n_batch)):
             if 2 * l * n_s <= t <= (2 * l + 1) * n_s:
                 # Learning increasing
@@ -245,7 +247,6 @@ def minibatch_GD(X, Y, GDparams, W1, W2, b1, b2, lamb, eval_X, eval_Y, num_cycle
             b1 += -learning_rate * grad_b1
             b2 += -learning_rate * grad_b2
             if t >= 2 * num_cycle * n_s:
-                print('<| we gotta break bro')
                 breakk = True
                 break
             # We reached the bottom after having been at the top of the cycle, so increase l
@@ -273,7 +274,6 @@ def plot_loss(training_loss, eval_loss):
     plt.plot([i for i in range(len(eval_loss))], eval_loss, color='red', linewidth=2, label='validation loss')
     plt.xlabel('epoch')
     plt.ylabel('loss')
-    plt.ylim(bottom=0)
     plt.legend()
     plt.show()
 
@@ -283,7 +283,6 @@ def plot_cost(training_loss, eval_loss):
     plt.plot([i for i in range(len(eval_loss))], eval_loss, color='red', linewidth=2, label='validation')
     plt.xlabel('epoch')
     plt.ylabel('cost')
-    plt.ylim(bottom=0)
     plt.legend()
     plt.show()
 
@@ -293,8 +292,6 @@ def plot_acc(acc_t, acc_e):
     plt.plot([i for i in range(len(acc_e))], acc_e, color='red', linewidth=2, label='validation')
     plt.xlabel('epoch')
     plt.ylabel('accuracy')
-    plt.ylim(top=1)
-    plt.ylim(bottom=0)
     plt.legend()
     plt.show()
 
@@ -406,8 +403,22 @@ def compute_grads(X, Y, W1, W2, b1, b2, lamb, verbose=False, h=1e-5):
 ########################################################################################################################
 
 
-if __name__ == '__main__':
-    # http://www.cs.toronto.edu/~kriz/cifar.html
+def get_small_batches():
+    dataX, dataY, datay = parse_data(loadBatch('data_batch_1'))
+    eval_X, eval_Y, eval_y = parse_data(loadBatch('data_batch_2'))
+    test_X, test_Y, test_y = parse_data(loadBatch('test_batch'))
+
+    train_variance = dataX.std(axis=1).reshape(dataX.shape[0], 1)
+    train_mean = dataX.mean(axis=1).reshape(dataX.shape[0], 1)
+
+    dataX = (dataX - train_mean)/train_variance
+    eval_X = (eval_X - train_mean) / train_variance
+    test_X = (test_X - train_mean) / train_variance
+
+    return dataX, dataY, datay, eval_X, eval_Y, eval_y, test_X, test_Y, test_y
+
+
+def get_big_batches():
     dataX, dataY, datay = parse_data(loadBatch('data_batch_1'))
     dataX2, dataY2, datay2 = parse_data(loadBatch('data_batch_2'))
     dataX3, dataY3, datay3 = parse_data(loadBatch('data_batch_3'))
@@ -417,15 +428,28 @@ if __name__ == '__main__':
               np.concatenate((dataY, dataY2, dataY3, dataY4, dataY5[:, :9000]), axis=1), \
               np.concatenate((datay, datay2, datay3, datay4, datay5[:9000]))
     eval_X, eval_Y, eval_y = dataX5[:, 9000:], dataY5[:, 9000:], datay5[9000:]
-    X, eval_X = preprocess_data(X), preprocess_data(eval_X)
+    test_X, test_Y, test_y = parse_data(loadBatch('test_batch'))
+    train_variance = X.std(axis=1).reshape(X.shape[0], 1)
+    train_mean = X.mean(axis=1).reshape(X.shape[0], 1)
+
+    X = (X - train_mean)/train_variance
+    eval_X = (eval_X - train_mean)/train_variance
+    test_X = (test_X - train_mean)/train_variance
+
+    return X, Y, y, eval_X, eval_Y, eval_y, test_X, test_Y, test_y
+
+
+if __name__ == '__main__':
+    X, Y, y, eval_X, eval_Y, eval_y, test_X, test_Y, test_y = get_small_batches()
     hid_nodes = 50  # m
     # PERFORM GRID SEARCH THROUGH HYPERPARAMETER SPACE TO FIND LAMBDA
     # dom = [0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1]
     # dom = [1e-5, 3e-5, 5e-5, 8e-5, 1e-4, 3e-4, 5e-4, 8e-4, 1e-3, 3e-3, 5e-3, 8e-3, 1e-2, 3e-2, 5e-2]
     filename = 'valid_scores_fine_3cycle.txt'
     W1, W2, b1, b2 = initialize_params(Y.shape[0], X.shape[0], hid_nodes, True)
-    batch_n, lamb = 100, 5e-3
-    learning_rate, n_epochs, num_cyc = 0.001, 48, 3
+    # Good lambda 5e-3
+    batch_n, lamb = 100, 0.01
+    learning_rate, n_epochs, num_cyc = 0.001, 10, 1
     params = {'n_batch': batch_n, 'eta': learning_rate, 'n_epochs': n_epochs}
     # """
     W1_upd, W2_upd, b1_upd, b2_upd, cost_t, cost_e, loss_t, loss_e, acc_t, acc_e, eta_l = minibatch_GD(X, Y, params, W1,
@@ -436,8 +460,8 @@ if __name__ == '__main__':
     plot_eta(eta_l)
     plot_acc(acc_t, acc_e)
     plot_cost(cost_t, cost_e)
-    test_X, test_Y, test_y = parse_data(loadBatch('test_batch'), True)
-    test_X = preprocess_data(test_X)
+    #test_X, test_Y, test_y = parse_data(loadBatch('test_batch'), True)
+    #test_X = preprocess_data(test_X)
     test_acc = compute_accuracy(test_X, test_y, W1_upd, W2_upd, b1_upd, b2_upd)
     print('<| Final test acc: [{}]'.format(test_acc))
     """ FOR WRITING TO FILE DURING GRID SEARCH OF LAMBDA
