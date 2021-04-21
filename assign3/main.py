@@ -42,12 +42,6 @@ def load_batch(filename):
     return dict
 
 
-def preprocess_data(x):
-    print('<| Preprocess X data :')
-    normalized = (x - x.mean(axis=0)) / x.std(axis=0)
-    return normalized
-
-
 def softmax(x):
     """ Standard definition of the softmax function """
     return np.exp(x) / np.sum(np.exp(x), axis=0)
@@ -94,7 +88,14 @@ class KNN:
         self.beta = [0 for _ in range(len(num_nodes))]
         self.grad_w = None
         self.grad_b = None
+        self.training_mean = 0
+        self.training_std = 1
         self.verbose = verbose
+
+    def preprocess_data(self, x):
+        print('<| Preprocessing data ...')
+        normalized = (x - self.training_mean) / self.training_std
+        return normalized
 
     def parse_full_data(self, val_split=5000):
         """
@@ -115,16 +116,18 @@ class KNN:
                   np.concatenate((dataY, dataY2, dataY3, dataY4, dataY5[:, :val_split]), axis=1), \
                   np.concatenate((datay, datay2, datay3, datay4, datay5[:val_split]))
         eval_X, eval_Y, eval_y = dataX5[:, val_split:], dataY5[:, val_split:], datay5[val_split:]
-        self.X = preprocess_data(X)
+        self.training_std = X.std(axis=1).reshape(X.shape[0], 1)
+        self.training_mean = X.mean(axis=1).reshape(X.shape[0], 1)
+        self.X = self.preprocess_data(X)
         self.Y = Y
         self.y = y
-        self.X_eval = preprocess_data(eval_X)
+        self.X_eval = self.preprocess_data(eval_X)
         self.Y_eval = eval_Y
         self.y_eval = eval_y
         self.num_samples = X.shape[1]
 
         test_X, test_Y, test_y = parse_data(load_batch('test_batch'))
-        self.X_test = preprocess_data(test_X)
+        self.X_test = self.preprocess_data(test_X)
         self.Y_test = test_Y
         self.y_test = test_y
 
@@ -157,7 +160,7 @@ class KNN:
         self.b[-1] = np.zeros(shape=(self.Y.shape[0], 1))
 
         if self.verbose:
-            print('<| Initializing the network parameters...')
+            print('<| Initializing the network parameters ...')
             for idx, w in enumerate(self.W):
                 print(f'\t\tthe shape of W{idx + 1}: {w.shape}')
             for idx, b in enumerate(self.b):
@@ -396,8 +399,6 @@ class KNN:
         plt.ylabel(label)
         if label == 'accuracy':
             plt.ylim(top=1)
-            plt.ylim(bottom=0)
-        else:
             plt.ylim(bottom=0)
         plt.legend()
         plt.show()
