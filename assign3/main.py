@@ -45,11 +45,6 @@ def load_batch(filename):
 def softmax(x):
     """ Standard definition of the softmax function """
     return np.exp(x) / np.sum(np.exp(x), axis=0)
-
-
-def batch_normalize(S, mu, V, eps=1e-4):
-    V = np.array(V)
-    return (S - mu)/np.sqrt(np.diag(V + eps))
 # ======================================================================================================================
 
 
@@ -60,7 +55,7 @@ class KNN:
                  X_eval=None, Y_eval=None, y_eval=None,
                  X_test=None, Y_test=None, y_test=None,
                  batch_size=0, n_epochs=1, eta=0.0, lamda=0.0,
-                 num_layers=0, num_nodes=None, verbose=False):
+                 num_layers=0, num_nodes=None, shuffle=False, verbose=False):
         if num_nodes is None:
             num_nodes = []
         self.X = X
@@ -90,7 +85,13 @@ class KNN:
         self.grad_b = None
         self.training_mean = 0
         self.training_std = 1
+        self.shuffle = shuffle
         self.verbose = verbose
+
+    @staticmethod
+    def batch_normalize(S, mu, V, eps=1e-4):
+        V = np.array(V)
+        return (S - mu) / np.sqrt(np.diag(V + eps))
 
     def preprocess_data(self, x):
         print('<| Preprocessing data ...')
@@ -167,9 +168,6 @@ class KNN:
                 print(f'\t\tthe shape of b{idx + 1}: {b.shape}')
         return
 
-    def compute_gradient(self):
-        pass
-
     def forward_pass(self, X=None):
         """
         func forward_pass/2
@@ -221,9 +219,23 @@ class KNN:
         # Transform the data to a matrix
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
-        X_l, S_l, S_norm_l = [], [], []
-        # TODO: we need vectors or matrices for the mean and variance of the scores S
-        pass
+        # From the forward pass of the back-prop algorithm you should store
+        # X_b^l = (x_1^l, x_2^l, ..., x_n^l), S_b^l = (s_1^l, s_2^l, ..., s_n^l) and normalized S_b^l
+        X_l, S_l, S_norm_l, mu, std, H, P, X_tmp = [], [], [], [], [], [], [], X
+        for i in range(self.hidden_layers):
+            # This is the un-normalized score for layer l
+            S_l.append(self.W[i] @ X_tmp + self.b[i])
+            mu.append(np.mean(S_l[-1], axis=1))
+            std.append(np.var(S_l[-1], axis=1)*(self.batch_size - 1)/self.batch_size)
+            S_norm_l.append(self.batch_normalize(S_l[-1], mu[-1], std[-1]))
+            H.append(np.maximum(0, np.multiply(self.gamma[i], S_norm_l[-1]) + self.beta[i]))
+            X_tmp = H[-1]
+
+        # Apply the final linear transformation
+        S_l.append(self.W[-1]@H[-1] + self.b[-1])
+        P = softmax(softmax(S_l[-1]))
+
+        return P, S_l, S_norm_l, H, mu, std
 
     def backward_pass(self, X, Y):
 
@@ -280,7 +292,7 @@ class KNN:
 
     def compute_acc(self, X, y, label='training', verbose=False):
         """
-        func compute_acc/4
+        func compute_acc/5
         @spec (self, np.array(), np.array(), str) :: float
             Computes the accuracy given the found model parameters W, on the data X and corresponding labels y.
             The y labels are not one hot encoded now. Calculates the forward pass in order to evaluate the network.
@@ -301,6 +313,14 @@ class KNN:
         return correct / y.shape[0]
 
     def fit(self, X, Y, y):
+        """
+        func fit/4
+        @spec fit(self, np.array(), np.array(), np.array()) :: list, list, list, list, list, list, list
+            Trains the model parameters self.W and self.b to the data X, Y and y. Utilizes mini-batch gradient descent
+            and features shuffling of the training data prior to each epoch. Cyclic learning rate is used and the
+            model is only trained for as many cycles that are specified. If all learning rate cycles have been performed
+            before all epochs have been iterated, training will be terminated.
+        """
         cost_training, loss_training, cost_eval, loss_eval, acc_t, eta_l, acc_e = [], [], [], [], [], [], []
         learning_rate, eta_min, eta_max, l, t = 1e-3, 1e-5, 1e-1, 0, 1
         num_cycle, n_s = 2, 5 * 45000 / self.batch_size
@@ -322,6 +342,13 @@ class KNN:
         for _ in tqdm(range(self.n_epochs)):
             if breakk:
                 break
+            # Shuffle the data
+            if self.shuffle:
+                indices = np.arange(X.shape[1])
+                np.random.shuffle(indices)
+                X = X[:, indices]
+                Y = Y[:, indices]
+                y = y[indices]
             for j in range(int(X.shape[1]/self.batch_size)):
                 if 2 * l * n_s <= t <= (2 * l + 1) * n_s:
                     # Learning increasing
@@ -397,26 +424,28 @@ class KNN:
             plt.plot([i for i in range(len(eval_loss))], eval_loss, color='red', linewidth=2, label='validation')
         plt.xlabel('epoch')
         plt.ylabel(label)
-        if label == 'accuracy':
-            plt.ylim(top=1)
-            plt.ylim(bottom=0)
         plt.legend()
         plt.show()
 
 
 def main():
+    # -- Unit testing --
     np.random.seed(69)
     knn = KNN(batch_size=100, n_epochs=20, eta=1e-4, lamda=5e-3,
-              num_layers=9, num_nodes=[50, 30, 20, 20, 10, 10, 10, 10], verbose=True)
+              num_layers=3, num_nodes=[50, 50],
+              shuffle=True, verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
+    P, S_l, S_norm_l, H, mu, std = knn.forward_pass_BN(knn.X[:, knn.batch_size])
+    print(S_norm_l)
+    """
     cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y, knn.y)
     knn.plot(cost_training, cost_eval, 'cost')
     knn.plot(loss_training, loss_eval, 'loss')
     knn.plot(acc_t, acc_e, 'accuracy')
     knn.plot(eta_l, [], 'learning rate')
     knn.evaluate(knn.X_test, knn.y_test)
-    # knn.compute_acc(knn.X_eval, knn.y_eval, label='validation')
+    """
 
 
 if __name__ == '__main__':
