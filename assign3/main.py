@@ -93,7 +93,12 @@ class KNN:
 
     @staticmethod
     def batch_normalize(S, mu, V, eps=1e-4):
-        V = np.array(V)
+        if len(S.shape) < 2:
+            S = np.asmatrix(S).T
+        if len(mu.shape) < 2:
+            mu = np.asmatrix(mu).T
+        if len(V.shape) < 2:
+            V = np.asmatrix(V).T
         return (S - mu) / np.sqrt(np.diag(V + eps))
 
     def preprocess_data(self, x):
@@ -219,12 +224,12 @@ class KNN:
             X = np.asmatrix(X).T
         # From the forward pass of the back-prop algorithm you should store
         # X_b^l = (x_1^l, x_2^l, ..., x_n^l), S_b^l = (s_1^l, s_2^l, ..., s_n^l) and normalized S_b^l
-        X_l, S_l, S_norm_l, mu, std, H, P, X_tmp = [], [], [], [], [], [], [], X
+        S_l, S_norm_l, mu, std, H, P, X_tmp = [], [], [], [], [], [], X
         for i in range(self.hidden_layers):
             # This is the un-normalized score for layer l
             S_l.append(self.W[i] @ X_tmp + self.b[i])
             mu.append(np.mean(S_l[-1], axis=1))
-            std.append(np.var(S_l[-1], axis=1)*(self.batch_size - 1)/self.batch_size)
+            std.append(np.var(S_l[-1], axis=1))
             S_norm_l.append(self.batch_normalize(S_l[-1], mu[-1], std[-1]))
             H.append(np.maximum(0, np.multiply(self.gamma[i], S_norm_l[-1]) + self.beta[i]))
             X_tmp = H[-1]
@@ -500,15 +505,16 @@ class KNN:
 def main():
     # -- Unit testing --
     np.random.seed(69)
-    knn = KNN(batch_size=100, n_epochs=20, eta=1e-4, lamda=5e-3,
-              num_layers=3, num_nodes=[50, 50], dimensionality=3072,
+    knn = KNN(batch_size=100, n_epochs=20, eta=1e-3, lamda=5e-3,
+              num_layers=9, num_nodes=[50, 30, 20, 20, 10, 10, 10, 10], dimensionality=3072,
               shuffle=True, batch_norm=False, verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
-    gradwl, gradbl = knn.backward_pass(knn.X[:, :20], knn.Y[:, :20])
-    numwl, numbl, _, _ = knn.compute_grads_num_slow(knn.X[:, :20], knn.Y[:, :20])
-    print(knn.compare_gradients(g_a=gradbl[2], g_n=numbl[2]))
+    P, S_l, S_norm_l, H, mu, std = knn.forward_pass_BN()
     """
+    gradwl, gradbl = knn.backward_pass(knn.X[:, :2], knn.Y[:, :2])
+    numwl, numbl, _, _ = knn.compute_grads_num_slow(knn.X[:, :2], knn.Y[:, :2])
+    print(knn.compare_gradients(g_a=gradbl[2], g_n=numbl[2]))
     cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y, knn.y)
     knn.plot(cost_training, cost_eval, 'cost')
     knn.plot(loss_training, loss_eval, 'loss')
