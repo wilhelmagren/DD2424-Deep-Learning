@@ -55,7 +55,8 @@ class KNN:
                  X_eval=None, Y_eval=None, y_eval=None,
                  X_test=None, Y_test=None, y_test=None,
                  batch_size=0, n_epochs=1, eta=0.0, lamda=0.0,
-                 num_layers=0, num_nodes=None, shuffle=False, verbose=False):
+                 num_layers=0, num_nodes=None, shuffle=False,
+                 batch_norm=False, dimensionality=3072, verbose=False):
         if num_nodes is None:
             num_nodes = []
         self.X = X
@@ -85,7 +86,9 @@ class KNN:
         self.grad_b = None
         self.training_mean = 0
         self.training_std = 1
+        self.dimensionality = dimensionality
         self.shuffle = shuffle
+        self.batch_norm = batch_norm
         self.verbose = verbose
 
     @staticmethod
@@ -119,17 +122,17 @@ class KNN:
         eval_X, eval_Y, eval_y = dataX5[:, val_split:], dataY5[:, val_split:], datay5[val_split:]
         self.training_std = X.std(axis=1).reshape(X.shape[0], 1)
         self.training_mean = X.mean(axis=1).reshape(X.shape[0], 1)
-        self.X = self.preprocess_data(X)
-        self.Y = Y
+        self.X = self.preprocess_data(X)[:self.dimensionality, :]
+        self.Y = Y[:self.dimensionality, :]
         self.y = y
-        self.X_eval = self.preprocess_data(eval_X)
-        self.Y_eval = eval_Y
+        self.X_eval = self.preprocess_data(eval_X)[:self.dimensionality, :]
+        self.Y_eval = eval_Y[:self.dimensionality, :]
         self.y_eval = eval_y
         self.num_samples = X.shape[1]
 
         test_X, test_Y, test_y = parse_data(load_batch('test_batch'))
-        self.X_test = self.preprocess_data(test_X)
-        self.Y_test = test_Y
+        self.X_test = self.preprocess_data(test_X)[:self.dimensionality, :]
+        self.Y_test = test_Y[:self.dimensionality, :]
         self.y_test = test_y
 
         if self.verbose:
@@ -168,7 +171,7 @@ class KNN:
                 print(f'\t\tthe shape of b{idx + 1}: {b.shape}')
         return
 
-    def forward_pass(self, X=None):
+    def forward_pass(self, X=None, W=None, b=None):
         """
         func forward_pass/2
         @spec (self, np.array()) :: np.array(), np.array()
@@ -180,6 +183,10 @@ class KNN:
         # assign a temporary variable which holds the propagated input
         if X is None:
             X = self.X
+        if W is None:
+            W = self.W
+        if b is None:
+            b = self.b
         # Transform the data to a matrix
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
@@ -187,11 +194,11 @@ class KNN:
         S, H = [], []
         for i in range(self.hidden_layers):
             # This is the un-normalized score for layer l
-            S.append(self.W[i] @ X_tmp + self.b[i])
+            S.append(W[i] @ X_tmp + b[i])
             H.append(np.maximum(0, S[-1]))
             X_tmp = H[-1]
         # Apply the final linear transformation
-        S.append(self.W[-1] @ H[-1] + self.b[-1])
+        S.append(W[-1] @ H[-1] + b[-1])
         # Apply softmax operation to turn final scores into probabilities
         P = softmax(S[-1])
 
@@ -202,16 +209,7 @@ class KNN:
         func forward_pass_BN/2
         @spec (self, np.array()) :: np.array(), np.array()
             Performs the forward pass of the network model, with batch normalization.
-            TODO: Add Batch Normalization to the forward pass. So what we have to do is normalize the scores at each
-                  layer, but you compute the mean and variances of the un-normalized scores from the data in the
-                  mini-batch. Assume we have a mini-batch of data B = {(x1, y1), ..., (xn, yn)}. At each layer
-                  1 <= l <= k - 1 you must make the following computations. Compute the un-normalized scores at the
-                  current layer l for each example in the mini-batch:
-                        s_i^l = W_l * x_i^(l - 1) + b_i     , for i = 1, ..., n
-                  Then compute the mean and variances of these un-normalized scores
-                        u^l = 1/n SUM{from i=1 => n} s_i^l     , (u^l is a vector of all mean values)
-                        v_j^l = 1/n SUM{from i=1 => n} (s_ij^l - mu_j^l)^2     , for j = 1, ..., m_l
-                  where m_l is the dimension of the scores at layer l.
+            TODO: actually implement batch normalization...
         """
         # assign a temporary variable which holds the propagated input
         if X is None:
@@ -237,7 +235,12 @@ class KNN:
 
         return P, S_l, S_norm_l, H, mu, std
 
-    def backward_pass(self, X, Y):
+    def backward_pass(self, X=None, Y=None):
+
+        if X is None:
+            X = self.X
+        if Y is None:
+            Y = self.Y
 
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
@@ -265,7 +268,54 @@ class KNN:
 
         return grad_W_l, grad_b_l
 
-    def compute_cost(self, X, Y):
+    def compute_grads_num_slow(self, X, Y, h=1e-5):
+        """
+        Computes the gradients the way that God intended man to do it.
+        This is simply the definition of the derivative.
+        lim h->inf (f(x+h) - f(x))/h
+        """
+        grad_W_l, grad_b_l, grad_gamma_l, grad_beta_l = [], [], [], []
+        for b, W in zip(self.b, self.W):
+            grad_b_l.append(np.zeros(shape=b.shape))
+            grad_W_l.append(np.zeros(shape=W.shape))
+
+        # I'm not sure on how this should work...
+        if self.batch_norm:
+            grad_gamma_l.append(np.zeros(len(self.gamma)))
+            grad_beta_l.append(np.zeros(len(self.beta)))
+
+        # Iterate over all the bias vectors
+        for j in range(len(self.b)):
+            for i in range(self.b[j].shape[0]):
+                b_try = self.b
+                b_try[j][i] = b_try[j][i] - h
+                c1, _ = self.compute_cost(X, Y, b=b_try)
+
+                b_try = self.b
+                b_try[j][i] = b_try[j][i] + h
+                c2, _ = self.compute_cost(X, Y, b=b_try)
+
+                grad_b_l[j][i] = (c2 - c1)/(2*h)
+
+        # Iterate over all the weight matrices
+        for j in range(len(self.W)):
+            for i in range(self.W[j].shape[0]):
+                W_try = self.W
+                W_try[j][i] = W_try[j][i] - h
+                c1, _ = self.compute_cost(X, Y, W=W_try)
+
+                W_try = self.W
+                W_try[j][i] = W_try[j][i] + h
+                c2, _ = self.compute_cost(X, Y, W=W_try)
+
+                grad_W_l[j][i] = (c2 - c1)/(2*h)
+
+        if self.batch_norm:
+            pass
+
+        return grad_W_l, grad_b_l, grad_gamma_l, grad_beta_l
+
+    def compute_cost(self, X, Y, W=None, b=None):
         """
         func compute_cost/3
         @spec (self, np.array(), np.array()) :: float, float
@@ -279,11 +329,16 @@ class KNN:
         if len(X.shape) < 2:
             X = np.asmatrix(X).T
 
+        if W is None:
+            W = self.W
+        if b is None:
+            b = self.b
+
         loss_sum, reg_sum = 0, 0
-        for w in self.W:
+        for w in W:
             reg_sum += self.lamda * np.sum(w ** 2)
 
-        P, _, _ = self.forward_pass(X)
+        P, _, _ = self.forward_pass(X, W=W, b=b)
         for col in range(X.shape[1]):
             loss_sum += -np.log(np.dot(Y[:, col].T, P[:, col]))
         loss = loss_sum / X.shape[1]
@@ -388,6 +443,20 @@ class KNN:
     def evaluate(self, X_test, y_test):
         self.compute_acc(X_test, y_test, label='testing', verbose=True)
 
+    def compare_gradients(self, g_a, g_n, eps=1e-6):
+        # is this value small? then good, we have almost the same gradient.
+        assert (g_a.shape == g_n.shape), print('<| shape of g_a: {}\n<| shape of g_n: {}'.format(g_a.shape, g_n.shape))
+        err = np.zeros(g_a.shape)
+        for i in range(err.shape[0]):
+            for j in range(err.shape[1]):
+                err[i, j] = np.abs(g_a[i, j] - g_n[i, j]) / max(eps, np.abs(g_a[i, j]) + np.abs(g_n[i, j]))
+
+        if self.verbose:
+            print('<| analytical gradient is: \n', g_a)
+            print('<| numerical gradient is: \n', g_n)
+
+        return err
+
     def __del__(self):
         """
         func __del__/1
@@ -432,12 +501,13 @@ def main():
     # -- Unit testing --
     np.random.seed(69)
     knn = KNN(batch_size=100, n_epochs=20, eta=1e-4, lamda=5e-3,
-              num_layers=3, num_nodes=[50, 50],
-              shuffle=True, verbose=True)
+              num_layers=3, num_nodes=[50, 50], dimensionality=3072,
+              shuffle=True, batch_norm=False, verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
-    P, S_l, S_norm_l, H, mu, std = knn.forward_pass_BN(knn.X[:, knn.batch_size])
-    print(S_norm_l)
+    gradwl, gradbl = knn.backward_pass(knn.X[:, :20], knn.Y[:, :20])
+    numwl, numbl, _, _ = knn.compute_grads_num_slow(knn.X[:, :20], knn.Y[:, :20])
+    print(knn.compare_gradients(g_a=gradbl[2], g_n=numbl[2]))
     """
     cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y, knn.y)
     knn.plot(cost_training, cost_eval, 'cost')
