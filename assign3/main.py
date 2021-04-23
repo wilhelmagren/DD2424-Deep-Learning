@@ -80,10 +80,12 @@ class KNN:
         self.hidden_layers = num_layers - 1
         self.num_samples = 0
         # Initialize the gamma and beta hyperparameters used for batch normalization
-        self.gamma = [1 for _ in range(len(num_nodes))]
-        self.beta = [0 for _ in range(len(num_nodes))]
+        self.gamma = [np.zeros((1, 1)) for _ in range(num_layers - 1)]
+        self.beta = [np.zeros((1, 1)) for _ in range(num_layers - 1)]
         self.grad_w = None
         self.grad_b = None
+        self.grad_gamma = None
+        self.grad_beta = None
         self.training_mean = 0
         self.training_std = 1
         self.dimensionality = dimensionality
@@ -168,13 +170,43 @@ class KNN:
             self.b[idx] = np.zeros(shape=(num_node, 1))
         self.b[-1] = np.zeros(shape=(self.Y.shape[0], 1))
 
+        for idx in range(self.hidden_layers):
+            self.gamma[idx] = np.asmatrix([1.0 for _ in range(self.num_nodes[idx])]).T
+            self.beta[idx] = np.asmatrix([0.0 for _ in range(self.num_nodes[idx])]).T
+
         if self.verbose:
             print('<| Initializing the network parameters ...')
             for idx, w in enumerate(self.W):
                 print(f'\t\tthe shape of W{idx + 1}: {w.shape}')
             for idx, b in enumerate(self.b):
                 print(f'\t\tthe shape of b{idx + 1}: {b.shape}')
+            for idx, gam in enumerate(self.gamma):
+                print(f'\t\tthe shape of gamma{idx + 1}: {gam.shape}')
+            for idx, gam in enumerate(self.beta):
+                print(f'\t\tthe shape of beta{idx + 1}: {gam.shape}')
         return
+
+    @staticmethod
+    def batch_normalize_backpass(g, s, mu, v, n, eps=1e-12):
+
+        if len(v.shape) < 2:
+            v = np.asmatrix(v).T
+        if len(mu.shape) < 2:
+            mu = np.asmatrix(mu).T
+
+        sig_one = np.power(v + eps, -0.5)
+        sig_two = np.power(v + eps, -1.5)
+        # 10x1 @ 1xn => 10xn
+        G1 = np.multiply(g, sig_one@np.ones((1, n)))
+        G2 = np.multiply(g, sig_two@np.ones((1, n)))
+        # s :: 10 x 45000
+        # mu :: 10 x 1
+        # D :: s - mu@1 = 10 x 45000 - 10x1@1xn
+        D = s - mu@np.ones((1, n))
+        c = np.multiply(G2, D)
+        term1 = (1/n)*np.multiply(D, c)
+        G_batch = G1 - (1/n)*(G1@np.ones((n, 1)))@np.ones((1, n)) - term1
+        return G_batch
 
     def forward_pass(self, X=None, W=None, b=None):
         """
@@ -224,15 +256,14 @@ class KNN:
             X = np.asmatrix(X).T
         # From the forward pass of the back-prop algorithm you should store
         # X_b^l = (x_1^l, x_2^l, ..., x_n^l), S_b^l = (s_1^l, s_2^l, ..., s_n^l) and normalized S_b^l
-        S_l, S_norm_l, mu, std, H, P, X_tmp = [], [], [], [], [], [], X
+        S_l, S_norm_l, mu, std, H, P = [], [], [], [], [X], []
         for i in range(self.hidden_layers):
             # This is the un-normalized score for layer l
-            S_l.append(self.W[i] @ X_tmp + self.b[i])
+            S_l.append(self.W[i] @ H[-1] + self.b[i])
             mu.append(np.mean(S_l[-1], axis=1))
             std.append(np.var(S_l[-1], axis=1))
             S_norm_l.append(self.batch_normalize(S_l[-1], mu[-1], std[-1]))
             H.append(np.maximum(0, np.multiply(self.gamma[i], S_norm_l[-1]) + self.beta[i]))
-            X_tmp = H[-1]
 
         # Apply the final linear transformation
         S_l.append(self.W[-1]@H[-1] + self.b[-1])
@@ -272,6 +303,48 @@ class KNN:
         self.grad_b = grad_b_l
 
         return grad_W_l, grad_b_l
+
+    def backward_pass_BN(self, X=None, Y=None):
+        if X is None:
+            X = self.X
+        if Y is None:
+            Y = self.Y
+
+        if len(X.shape) < 2:
+            X = np.asmatrix(X).T
+        if len(Y.shape) < 2:
+            Y = np.asmatrix(Y).T
+
+        P, S_l, S_norm_l, H, mu, std = self.forward_pass_BN(X)
+        grad_W_l, grad_b_l, grad_gamma_l, grad_beta_l = [], [], [], []
+
+        G_batch = -(Y - P)
+        grad_W_l.append((G_batch @ H[-1].T) / H[-1].shape[1] + 2 * self.lamda * self.W[-1])
+        grad_b_l.append(np.reshape((1 / X.shape[1]) * G_batch @ np.ones(X.shape[1]), (self.b[-1].shape[0], 1)))
+        G_batch = self.W[-1].T@G_batch
+        G_batch = np.multiply(G_batch, H[-1] > 0)
+        for l in range(self.hidden_layers - 1, -1, -1):
+            grad_gamma_l.append(np.reshape((1 / X.shape[1]) * np.multiply(G_batch, S_norm_l[l]) @ np.ones(X.shape[1]),
+                           (self.gamma[l].shape[0], 1)))
+            grad_beta_l.append(np.reshape((1 / X.shape[1]) * G_batch @ np.ones(X.shape[1]), (self.beta[l].shape[0], 1)))
+            G_batch = np.multiply(G_batch, self.gamma[l])
+            G_batch = self.batch_normalize_backpass(G_batch, S_l[l], mu[l], std[l], n=X.shape[1])
+            grad_W_l.append((G_batch @ H[l].T) / H[l].shape[1] + 2 * self.lamda * self.W[l])
+            grad_b_l.append(np.reshape((1 / X.shape[1]) * G_batch @ np.ones(X.shape[1]), (self.b[l].shape[0], 1)))
+            if l > 0:
+                G_batch = self.W[l].T @ G_batch
+                G_batch = np.multiply(G_batch, H[l] > 0)
+
+        grad_W_l.reverse()
+        grad_b_l.reverse()
+        grad_gamma_l.reverse()
+        grad_beta_l.reverse()
+        self.grad_w = grad_W_l
+        self.grad_b = grad_b_l
+        self.grad_gamma = grad_gamma_l
+        self.grad_beta = grad_beta_l
+
+        return grad_W_l, grad_b_l, grad_gamma_l, grad_beta_l
 
     def compute_grads_num_slow(self, X, Y, h=1e-5):
         """
@@ -420,10 +493,19 @@ class KNN:
                 j_start, j_end = j * self.batch_size, (j + 1) * self.batch_size
                 X_batch = X[:, j_start:j_end]
                 Y_batch = Y[:, j_start:j_end]
-                grad_W_l, grad_b_l = self.backward_pass(X_batch, Y_batch)
-                for idx, grad_W in enumerate(grad_W_l):
-                    self.W[idx] += -learning_rate*grad_W
-                    self.b[idx] += -learning_rate*grad_b_l[idx]
+                if self.batch_norm:
+                    grad_W_l, grad_b_l, grad_gamma_l, grad_beta_l = self.backward_pass_BN(X_batch, Y_batch)
+                    for idx, grad_W in enumerate(grad_W_l):
+                        self.W[idx] += -learning_rate * grad_W
+                        self.b[idx] += -learning_rate * grad_b_l[idx]
+                    for idx, (gamma, beta) in enumerate(zip(grad_gamma_l, grad_beta_l)):
+                        self.gamma[idx] += -learning_rate * gamma
+                        self.beta[idx] += -learning_rate * beta
+                else:
+                    grad_W_l, grad_b_l = self.backward_pass(X_batch, Y_batch)
+                    for idx, grad_W in enumerate(grad_W_l):
+                        self.W[idx] += -learning_rate*grad_W
+                        self.b[idx] += -learning_rate*grad_b_l[idx]
                 if t >= 2 * num_cycle * n_s:
                     breakk = True
                     break
@@ -507,21 +589,20 @@ def main():
     np.random.seed(69)
     knn = KNN(batch_size=100, n_epochs=20, eta=1e-3, lamda=5e-3,
               num_layers=9, num_nodes=[50, 30, 20, 20, 10, 10, 10, 10], dimensionality=3072,
-              shuffle=True, batch_norm=False, verbose=True)
+              shuffle=True, batch_norm=True, verbose=True)
     knn.parse_full_data(val_split=5000)
     knn.initialize_params()
-    P, S_l, S_norm_l, H, mu, std = knn.forward_pass_BN()
-    """
-    gradwl, gradbl = knn.backward_pass(knn.X[:, :2], knn.Y[:, :2])
-    numwl, numbl, _, _ = knn.compute_grads_num_slow(knn.X[:, :2], knn.Y[:, :2])
-    print(knn.compare_gradients(g_a=gradbl[2], g_n=numbl[2]))
+    #"""
+    # gradwl, gradbl = knn.backward_pass(knn.X[:, :2], knn.Y[:, :2])
+    # numwl, numbl, _, _ = knn.compute_grads_num_slow(knn.X[:, :2], knn.Y[:, :2])
+    # print(knn.compare_gradients(g_a=gradbl[2], g_n=numbl[2]))
     cost_training, cost_eval, loss_training, loss_eval, acc_t, acc_e, eta_l = knn.fit(knn.X, knn.Y, knn.y)
     knn.plot(cost_training, cost_eval, 'cost')
     knn.plot(loss_training, loss_eval, 'loss')
     knn.plot(acc_t, acc_e, 'accuracy')
     knn.plot(eta_l, [], 'learning rate')
     knn.evaluate(knn.X_test, knn.y_test)
-    """
+    #"""
 
 
 if __name__ == '__main__':
