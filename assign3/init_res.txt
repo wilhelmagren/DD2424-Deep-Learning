@@ -1,0 +1,8 @@
+NOBATCH:
+	sig 1e-1: 52.52%
+	sig 1e-3: 21.42%
+	sig 1e-4: 10.00%
+BATCH: 
+	sig 1e-1: 53.28%
+	sig 1e-3: 53.38%
+	sig 1e-4: 53.34%
