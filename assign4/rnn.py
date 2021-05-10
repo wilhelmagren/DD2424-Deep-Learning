@@ -1,11 +1,12 @@
 """
 Author: Wilhelm Ågren, wagren@kth.se
-Last edited: 05/05-2021
+Last edited: 10/05-2021
 """
 
 import os
 import pickle
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -40,15 +41,10 @@ class RNN:
         self.verbose = verbose
         print('-|' + '+'*100)
 
-    def build_mapping(self):
-        if self.verbose:
-            print('<| building the onehot-encoded mappings x -> y')
+    def build_mapping(self, offset=0):
         for idx in range(self.seq_length):
-            self.x_chars[:, idx] = np.transpose(self.onehot_idx(self.c2i[self.book_data[idx]]).flatten())
-            self.y_chars[:, idx] = self.onehot_idx(self.c2i[self.book_data[idx + 1]]).flatten()
-        if self.verbose:
-            print(f'\t\tx_chars shape: {self.x_chars.shape}')
-            print(f'\t\ty_chars shape: {self.y_chars.shape}')
+            self.x_chars[:, idx] = np.transpose(self.onehot_idx(self.c2i[self.book_data[idx + offset]]).flatten())
+            self.y_chars[:, idx] = self.onehot_idx(self.c2i[self.book_data[idx + 1 + offset]]).flatten()
 
     def init_model(self):
         self.b = np.zeros((self.m, ))
@@ -90,42 +86,42 @@ class RNN:
                   f'\t\tsize of c2i:\t{len(self.c2i.keys())}\n'
                   f'\t\tsize of data:\t{len(self.book_data)}')
 
-    def forward_pass(self, xt=None, yt=None, ht=None):
+    def forward_pass(self, xt=None, yt=None, ht=None, W=None, V=None, U=None):
         if ht is None:
             ht = self.h0
         if xt is None:
             xt = self.x_chars
         if yt is None:
             yt = self.y_chars
+        if W is None:
+            W = self.W
+        if V is None:
+            V = self.V
+        if U is None:
+            U = self.U
+
         tau = xt.shape[1]
         h_l, p_l, a_l, o_l, loss_l = np.zeros((self.m, tau + 1)), np.zeros((self.K, tau)), \
                                      np.zeros((self.m, tau)), np.zeros((self.K, tau)), np.zeros((1, tau))
         h_l[:, 0] = ht
         for t in range(tau):
             # (m x 1) = (m x m)*(m x 1) + (m x k)*(d x 1) + (m x 1)   ::   Hidden state at time t before non-linearity
-            a_l[:, t] = self.W@h_l[:, t] + self.U@xt[:, t] + self.b
+            a_l[:, t] = W@h_l[:, t] + U@xt[:, t] + self.b
             # hidden state at time t of size   (m x 1)
             h_l[:, t] = np.tanh(a_l[:, t])
             # output vector of unnormalized log probabilities for each class at time t of size   (K x 1)
-            o_l[:, t] = self.V@h_l[:, t] + self.c
+            o_l[:, t] = V@h_l[:, t] + self.c
             # output probability vector at time t of size   (K x 1)
-            p_l[:, t] = self.softmax(o_l[:, t])
-            loss_l[:, t] = self.loss(p_l[:, t], yt[:, t])
+            p_l[:, t] = self.__softmax(o_l[:, t])
+            loss_l[:, t] = self.__loss(p_l[:, t], yt[:, t])
         return h_l, p_l, a_l, o_l, loss_l
 
-    def adagrad(self, xt, yt):
+    def backprop(self, xt, yt, h):
         """
         Gradient computations for RNN, back propagation through time BPTT.
-            xt      ::  (K x tau)
-            yt      ::  (K x tau)
-            ht      ::  (m x tau + 1)
-            pt      ::  (K x tau)
-            at      ::  (m x tau)
-            ot      ::  (K x tau)
-            loss    ::  (1 x tau)
         """
         tau = xt.shape[1]
-        ht, pt, at, ot, loss = self.forward_pass(xt=xt, yt=yt)
+        ht, pt, at, ot, loss = self.forward_pass(xt=xt, yt=yt, ht=h)
 
         assert ht.shape == (self.m, tau + 1)
         assert pt.shape == (self.K, tau)
@@ -135,9 +131,7 @@ class RNN:
         grad_o_l = np.zeros((tau, self.K))
         grad_p_l = np.zeros((tau, self.K))
         for t in range(tau):
-            # - y_t^T/(y_l^T * p_t)     ::     (1 x K)/(1 x 1)  == (1 x K)
             grad_p_l[t, :] = -yt[:, t].T/(yt[:, t].T@pt[:, t])
-            # -(y_t - p_t)^T    ::    (K x 1  -  K x 1)^T  ==  (1 x K)
             grad_o_l[t, :] = -(yt[:, t] - pt[:, t]).T
 
         grad_V_l = np.zeros((self.K, self.m))
@@ -146,8 +140,8 @@ class RNN:
 
         grad_h_l = np.zeros((tau, self.m))
         grad_a_l = np.zeros((tau, self.m))
-        grad_h_l[tau - 1, :] = grad_o_l[tau - 1, :]@self.V  # (1 x m)  =  (1 x K)@(K x m)
-        grad_a_l[tau - 1, :] = grad_h_l[tau - 1, :]@np.diag(1 - (np.tanh(at[:, tau - 1])**2))  # (1 x m)  =  (1 x m)@(np.diag(1 - tanh^2(m x 1))
+        grad_h_l[tau - 1, :] = grad_o_l[tau - 1, :]@self.V
+        grad_a_l[tau - 1, :] = grad_h_l[tau - 1, :]@np.diag(1 - (np.tanh(at[:, tau - 1])**2))
         for t in range(tau - 2, -1, -1):
             grad_h_l[t, :] = grad_o_l[t, :]@self.V + grad_a_l[t + 1, :]@self.W
             grad_a_l[t, :] = grad_h_l[t, :]@np.diag(1 - (np.tanh(at[:, t])**2))
@@ -162,16 +156,42 @@ class RNN:
         self.grad_W = grad_W_l
         self.grad_U = grad_U_l
 
-    def synthesize(self, x0, n=None):
-        if self.verbose:
-            print(f'<| synthesizing a char sequence of length {n} from initial char {x0}')
+        return np.sum(loss), ht[:, tau]
+
+    def adagrad(self, batch_n=100, e=0):
+        """
+        SGD training loop
+        """
+        print('<| adagrad initialized:')
+        self.synthesize(self.book_data[0], n=200)
+        hprev, smooth_loss = self.h0, None
+        for iter in range(batch_n*len(self.book_data)):
+            if e > len(self.book_data) - self.seq_length - 1:
+                e = 0
+                hprev = self.h0
+            self.build_mapping(offset=e)
+            loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
+            self.W += -self.eta*self.grad_W
+            self.V += -self.eta*self.grad_V
+            self.U += -self.eta*self.grad_U
+            e += self.seq_length
+            if smooth_loss is None:
+                smooth_loss = loss
+            smooth_loss = 0.999*smooth_loss + 0.001*loss
+            if iter % 100 == 0:
+                print(f'\n\t\t iter = {iter},\tsmooth loss = {smooth_loss}')
+            if iter % 500 == 0:
+                self.synthesize(self.book_data[e], h0=hprev, n=200)
+
+    def synthesize(self, x0, h0=None, n=None):
         if n is None:
             n = self.seq_length
-        if type(x0) is str:
-            x0 = self.c2i[x0]
+        if h0 is None:
+            h0 = self.h0
         s = '\t\t'
+        x0 = self.c2i[x0]
         for idx in range(n):
-            _, pt, _, _, _ = self.forward_pass(xt=self.onehot_idx(x0))
+            _, pt, _, _, _ = self.forward_pass(xt=self.onehot_idx(x0), ht=h0)
             rand_idx = np.random.choice(np.arange(0, self.K), p=pt.flatten('C'))
             x0 = rand_idx
             s += self.i2c[x0]
@@ -182,12 +202,29 @@ class RNN:
         x[idx, 0] = 1
         return x
 
+    def numerical_grad(self, x, y, h=1e-4):
+        _, _, _, _, c = self.forward_pass(xt=x, yt=y)
+
+        grad_W = np.zeros((self.m, self.m))
+        grad_V = np.zeros((self.m, self.m))
+        grad_U = np.zeros((self.m, self.m))
+        try_W = self.W + h
+        try_V = self.V + h
+        try_U = self.U + h
+        _, _, _, _, cW = self.forward_pass(xt=x, yt=y, W=try_W)
+        _, _, _, _, cV = self.forward_pass(xt=x, yt=y, V=try_V)
+        _, _, _, _, cU = self.forward_pass(xt=x, yt=y, U=try_U)
+        for (costW, costV, costU) in zip(cW[0], cV[0], cU[0]):
+            grad_W += (costW - c) / (2*h)
+            grad_V += (costV - c) / (2 * h)
+            grad_U += (costU - c) / (2 * h)
+
     @staticmethod
-    def loss(p, y):
+    def __loss(p, y):
         return -np.log(np.dot(y.T, p))
 
     @staticmethod
-    def softmax(x):
+    def __softmax(x):
         return np.exp(x) / np.sum(np.exp(x), axis=0)
 
     def __load(self):
@@ -224,13 +261,11 @@ class RNN:
 
 def main():
     np.random.seed(2)
-    rnn = RNN(save=False, verbose=True, m=5, seq_length=5)
+    rnn = RNN(save=False, verbose=True, m=100, seq_length=25)
     rnn.prepare_data()
     rnn.init_model()
     rnn.build_mapping()
-    # h, p, a, o, l = rnn.forward_pass(xt=rnn.x_chars, yt=rnn.y_chars)
-    rnn.synthesize('2', n=10)
-    rnn.adagrad(xt=rnn.x_chars, yt=rnn.y_chars)
+    rnn.adagrad()
 
 
 if __name__ == '__main__':
