@@ -6,7 +6,6 @@ Last edited: 10/05-2021
 import os
 import pickle
 import numpy as np
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -63,7 +62,7 @@ class RNN:
         if self.verbose:
             print(f'<| preparing the data from filepath: {self.BOOK_FILEPATH}')
         if os.path.isfile(self.DATA_FILEPATH):
-            self.__load()
+            self.__load__()
             assert len(self.vocab) == len(self.i2c.keys()), print(f'!!! ERROR :: vocab size not equal i2c size, {len(self.vocab)} != {len(self.i2c.keys())}')
             return
         with open(self.BOOK_FILEPATH, 'r') as fd:
@@ -77,7 +76,7 @@ class RNN:
         self.K = len(self.vocab)
         self.N = len(self.book_data)
         if self.save:
-            self.__write()
+            self.__write__()
 
         if self.verbose:
             print(f'<| prepared data features below:\n'
@@ -112,8 +111,8 @@ class RNN:
             # output vector of unnormalized log probabilities for each class at time t of size   (K x 1)
             o_l[:, t] = V@h_l[:, t] + self.c
             # output probability vector at time t of size   (K x 1)
-            p_l[:, t] = self.__softmax(o_l[:, t])
-            loss_l[:, t] = self.__loss(p_l[:, t], yt[:, t])
+            p_l[:, t] = self.__softmax__(o_l[:, t])
+            loss_l[:, t] = self.__loss__(p_l[:, t], yt[:, t])
         return h_l, p_l, a_l, o_l, loss_l
 
     def backprop(self, xt, yt, h):
@@ -163,7 +162,6 @@ class RNN:
         SGD training loop
         """
         print('<| adagrad initialized:')
-        self.synthesize(self.book_data[0], n=200)
         hprev, smooth_loss = self.h0, None
         for iter in range(batch_n*len(self.book_data)):
             if e > len(self.book_data) - self.seq_length - 1:
@@ -183,12 +181,19 @@ class RNN:
             if iter % 500 == 0:
                 self.synthesize(self.book_data[e], h0=hprev, n=200)
 
-    def synthesize(self, x0, h0=None, n=None):
+    def synthesize(self, x0, h0=None, n=None) -> None:
+        """
+        func synthesize/4
+        @spec :: (Class(RNN), np.array, np.array, integer) =>  None
+            Takes a given text sequence x0, optionally starting matrix h and number n of chars to generate.
+            Computes the forward pass given x0 and h0 which yields softmaxed outputs,
+            the probabilities are used to sample from the available characters to chose next character in sequence.
+        """
         if n is None:
             n = self.seq_length
         if h0 is None:
             h0 = self.h0
-        s = '\t\t'
+        s = ''
         x0 = self.c2i[x0]
         for idx in range(n):
             _, pt, _, _, _ = self.forward_pass(xt=self.onehot_idx(x0), ht=h0)
@@ -197,7 +202,13 @@ class RNN:
             s += self.i2c[x0]
         print(s)
 
-    def onehot_idx(self, idx):
+    def onehot_idx(self, idx) -> np.array:
+        """
+        func onehot_idx/2
+        @spec :: (Class(RNN), integer) => np.array
+            Takes the given character index, respective to self.c2i, and instantiates
+            a np.array of the onehot encoded character index. Simply returns it. Bye.
+        """
         x = np.zeros((self.K, 1))
         x[idx, 0] = 1
         return x
@@ -220,14 +231,27 @@ class RNN:
             grad_U += (costU - c) / (2 * h)
 
     @staticmethod
-    def __loss(p, y):
+    def __loss__(p, y) -> np.array:
+        """
+        func __loss__/2
+        @spec :: (np.array, np.array) => np.array
+            Computes the cross-entropy loss between the given output probabilities p
+            and the onehot encoded target labels y. Returns the loss as a np.array.
+            If you want an integer, extract it from the array by accessing __loss__()[0, 0].
+        """
         return -np.log(np.dot(y.T, p))
 
     @staticmethod
-    def __softmax(x):
+    def __softmax__(x) -> np.array:
+        """
+        func __softmax__/1
+        @spec :: (np.array) => np.array
+            Computes the softmax of the given np.array x.
+            This turns the values of x into probabilities such that they sum to 1.
+        """
         return np.exp(x) / np.sum(np.exp(x), axis=0)
 
-    def __load(self):
+    def __load__(self):
         if self.verbose:
             print(f'\t\tvocab already exists, loading it and building idx dictionaries ...')
         self.i2c = pickle.load(open(self.i2c_FILEPATH, 'rb'))
@@ -244,7 +268,7 @@ class RNN:
                   f'\t\tsize of c2i:\t{len(self.c2i.keys())}\n'
                   f'\t\tsize of data:\t{len(self.book_data)}')
 
-    def __write(self):
+    def __write__(self):
         if self.verbose:
             print(f'\t\twriting the i2c to filepath: {self.i2c_FILEPATH}')
             print(f'\t\twriting the data to filepath: {self.DATA_FILEPATH}')
