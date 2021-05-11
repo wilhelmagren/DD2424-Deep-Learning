@@ -1,11 +1,12 @@
 """
 Author: Wilhelm Ågren, wagren@kth.se
-Last edited: 10/05-2021
+Last edited: 11/05-2021
 """
 
 import os
 import pickle
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -51,7 +52,7 @@ class RNN:
         self.U = np.random.rand(self.m, self.K)*self.sigma
         self.W = np.random.rand(self.m, self.m)*self.sigma
         self.V = np.random.rand(self.K, self.m)*self.sigma
-        self.grad_U = np.zeros((self.m, self.m))
+        self.grad_U = np.zeros((self.m, self.K))
         self.grad_W = np.zeros((self.m, self.m))
         self.grad_V = np.zeros((self.K, self.m))
         self.h0 = np.zeros((self.m, ))
@@ -113,11 +114,14 @@ class RNN:
             # output probability vector at time t of size   (K x 1)
             p_l[:, t] = self.__softmax__(o_l[:, t])
             loss_l[:, t] = self.__loss__(p_l[:, t], yt[:, t])
-        return h_l, p_l, a_l, o_l, loss_l
+        return h_l, p_l, a_l, o_l, np.sum(loss_l)
 
-    def backprop(self, xt, yt, h):
+    def backprop(self, xt, yt, h) -> (int, np.array):
         """
-        Gradient computations for RNN, back propagation through time BPTT.
+        func backprop/4
+        @spec :: (Class(RNN), np.array, np.array, np.array) => (integer, np.array)
+            Back Propagation Through Time gradient computations for RNN.
+
         """
         tau = xt.shape[1]
         ht, pt, at, ot, loss = self.forward_pass(xt=xt, yt=yt, ht=h)
@@ -155,36 +159,42 @@ class RNN:
         self.grad_W = grad_W_l
         self.grad_U = grad_U_l
 
-        return np.sum(loss), ht[:, tau]
+        return loss, ht[:, tau]
 
-    def adagrad(self, batch_n=100, e=0):
+    def adagrad(self, n_epochs=100, e=0) -> None:
         """
-        SGD training loop
+        func adagrad/3
+        @spec :: (Class(RNN), integer, integer) => None
+            Performs Stochastic Gradient Descent (SGD) according to the AdaGrad method.
+            Iterates through the book-data list in steps of seq_length. For each
+            seq_length, iterations are incremented. Whenever the entire book-data list
+            is iterated, reset 'e' and increment num epochs.
+                n_epochs specifies the maximum number of total epochs to train on, and
+                is somewhat optional. Simply train for longer if you want.
         """
         print('<| adagrad initialized:')
-        hprev, smooth_loss = self.h0, None
-        for iter in range(batch_n*len(self.book_data)):
+        hprev, smooth_loss, epochs, smooth_loss = self.h0, None, 0, 100
+        while epochs < n_epochs:
             if e > len(self.book_data) - self.seq_length - 1:
                 e = 0
+                epochs += 1
                 hprev = self.h0
             self.build_mapping(offset=e)
             loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
             self.W += -self.eta*self.grad_W
             self.V += -self.eta*self.grad_V
             self.U += -self.eta*self.grad_U
-            e += self.seq_length
-            if smooth_loss is None:
-                smooth_loss = loss
             smooth_loss = 0.999*smooth_loss + 0.001*loss
-            if iter % 100 == 0:
-                print(f'\n\t\t iter = {iter},\tsmooth loss = {smooth_loss}')
-            if iter % 500 == 0:
+            if e % 100 == 0:
+                print(f'\n\t\t iter = {e},\tsmooth loss = {smooth_loss}')
+            if e % 500 == 0:
                 self.synthesize(self.book_data[e], h0=hprev, n=200)
+            e += self.seq_length
 
     def synthesize(self, x0, h0=None, n=None) -> None:
         """
         func synthesize/4
-        @spec :: (Class(RNN), np.array, np.array, integer) =>  None
+        @spec :: (Class(RNN), np.array, np.array, integer) => None
             Takes a given text sequence x0, optionally starting matrix h and number n of chars to generate.
             Computes the forward pass given x0 and h0 which yields softmaxed outputs,
             the probabilities are used to sample from the available characters to chose next character in sequence.
@@ -202,6 +212,61 @@ class RNN:
             s += self.i2c[x0]
         print(s)
 
+    def numerical_grad(self, x, y, h=1e-4) -> (np.array, np.array, np.array):
+        """
+        Don't look at this abomination...
+        """
+
+        assert x.shape == y.shape
+
+        grad_U = np.zeros((self.m, self.K))
+        grad_W = np.zeros((self.m, self.m))
+        grad_V = np.zeros((self.K, self.m))
+        grad_n_l = [grad_U, grad_W, grad_V]
+        grad_a_l = [self.grad_U, self.grad_W, self.grad_V]
+
+        print('<| calculating numerical gradients for theta={U, W, V}')
+        print('\t\tInitiating grad_U numerical')
+        for idx in tqdm(range(grad_U.shape[0])):
+            for jdx in range(grad_U.shape[1]):
+                grad_try_U = np.copy(grad_U)
+                grad_try_U[idx, jdx] += h
+                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
+
+                grad_try_U = np.copy(grad_U)
+                grad_try_U[idx, jdx] -= h
+                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
+                grad_U[idx, jdx] = (loss_plus - loss_minus) / (2*h)
+
+        print('\n\t\tInitiating grad_W numerical')
+        for idx in tqdm(range(grad_W.shape[0])):
+            for jdx in range(grad_W.shape[1]):
+                grad_try_W = np.copy(grad_W)
+                grad_try_W[idx, jdx] += h
+                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
+
+                grad_try_W = np.copy(grad_W)
+                grad_try_W[idx, jdx] -= h
+                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
+                grad_W[idx, jdx] = (loss_plus - loss_minus) / (2*h)
+
+        print('\n\t\tInitiating grad_V numerical')
+        for idx in tqdm(range(grad_V.shape[0])):
+            for jdx in range(grad_V.shape[1]):
+                grad_try_V = np.copy(grad_V)
+                grad_try_V[idx, jdx] += h
+                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
+
+                grad_try_V = np.copy(grad_V)
+                grad_try_V[idx, jdx] -= h
+                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
+                grad_V[idx, jdx] = (loss_plus - loss_minus) / (2*h)
+
+        for (g_a, g_n) in zip(grad_a_l, grad_n_l):
+            self.__compare_gradients__(g_a=g_a, g_n=g_n)
+
+        return grad_V, grad_W, grad_U
+
     def onehot_idx(self, idx) -> np.array:
         """
         func onehot_idx/2
@@ -212,23 +277,6 @@ class RNN:
         x = np.zeros((self.K, 1))
         x[idx, 0] = 1
         return x
-
-    def numerical_grad(self, x, y, h=1e-4):
-        _, _, _, _, c = self.forward_pass(xt=x, yt=y)
-
-        grad_W = np.zeros((self.m, self.m))
-        grad_V = np.zeros((self.m, self.m))
-        grad_U = np.zeros((self.m, self.m))
-        try_W = self.W + h
-        try_V = self.V + h
-        try_U = self.U + h
-        _, _, _, _, cW = self.forward_pass(xt=x, yt=y, W=try_W)
-        _, _, _, _, cV = self.forward_pass(xt=x, yt=y, V=try_V)
-        _, _, _, _, cU = self.forward_pass(xt=x, yt=y, U=try_U)
-        for (costW, costV, costU) in zip(cW[0], cV[0], cU[0]):
-            grad_W += (costW - c) / (2*h)
-            grad_V += (costV - c) / (2 * h)
-            grad_U += (costU - c) / (2 * h)
 
     @staticmethod
     def __loss__(p, y) -> np.array:
@@ -251,7 +299,20 @@ class RNN:
         """
         return np.exp(x) / np.sum(np.exp(x), axis=0)
 
-    def __load__(self):
+    @staticmethod
+    def __compare_gradients__(g_a, g_n, eps=1e-6):
+        assert (g_a.shape == g_n.shape), print('<| shape of g_a: {}\n<| shape of g_n: {}'.format(g_a.shape, g_n.shape))
+        for idx in range(g_a.shape[0]):
+            s = '['
+            for jdx in range(g_a.shape[1]):
+                s += ' ' + str(np.abs(g_a[idx, jdx] - g_n[idx, jdx]) / max(eps, np.abs(g_a[idx, jdx]) + np.abs(g_n[idx, jdx])))
+            print(s + ']')
+
+    def __load__(self) -> None:
+        """
+        Load the current model, i.e. i2c dict and book-data list, from the saved files
+        and store them as class attributes. Using pickle to load.
+        """
         if self.verbose:
             print(f'\t\tvocab already exists, loading it and building idx dictionaries ...')
         self.i2c = pickle.load(open(self.i2c_FILEPATH, 'rb'))
@@ -268,17 +329,20 @@ class RNN:
                   f'\t\tsize of c2i:\t{len(self.c2i.keys())}\n'
                   f'\t\tsize of data:\t{len(self.book_data)}')
 
-    def __write__(self):
+    def __write__(self) -> None:
+        """
+        Write the current model, i.e. i2c dict and book-data list, to files using pickle for dumping.
+        """
         if self.verbose:
             print(f'\t\twriting the i2c to filepath: {self.i2c_FILEPATH}')
             print(f'\t\twriting the data to filepath: {self.DATA_FILEPATH}')
         pickle.dump(self.i2c, open(self.i2c_FILEPATH, 'wb'))
         pickle.dump(self.book_data, open(self.DATA_FILEPATH, 'wb'))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return 'Class(RNN)'
 
-    def __del__(self):
+    def __del__(self) -> None:
         print(f'<| deleting instance of {self.__repr__()}')
         print('-|' + '+' * 100)
 
@@ -289,7 +353,10 @@ def main():
     rnn.prepare_data()
     rnn.init_model()
     rnn.build_mapping()
-    rnn.adagrad()
+    rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
+    _ = rnn.numerical_grad(x=rnn.x_chars, y=rnn.y_chars)
+
+    # rnn.adagrad()
 
 
 if __name__ == '__main__':
