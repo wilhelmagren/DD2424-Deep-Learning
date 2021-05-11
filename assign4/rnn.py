@@ -5,13 +5,14 @@ Last edited: 11/05-2021
 
 import os
 import pickle
+import time
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
 class RNN:
-    def __init__(self, save=True, sigma=0.01, m=100, eta=0.1, seq_length=25, verbose=False):
+    def __init__(self, save=True, sigma=0.01, m=100, eta=0.01, gamma=0.9, eps=np.finfo(float).eps, seq_length=25, verbose=False):
         self.FILEPATH = os.getcwd()
         self.BOOK_FILEPATH = os.path.join(self.FILEPATH, 'data\\goblet_book.txt')
         self.i2c_FILEPATH = os.path.join(self.FILEPATH, 'data\\vocab.p')
@@ -25,6 +26,8 @@ class RNN:
         self.N = 0  # After loading/reading data should be set to 1107545 for the given HP book.
         self.eta = eta
         self.sigma = sigma
+        self.eps = eps
+        self.gamma = gamma
         self.seq_length = seq_length
         self.b = np.zeros(1)
         self.c = np.zeros(1)
@@ -34,6 +37,9 @@ class RNN:
         self.grad_U = np.zeros(1)
         self.grad_W = np.zeros(1)
         self.grad_V = np.zeros(1)
+        self.prev_m_W = None
+        self.prev_m_V = None
+        self.prev_m_U = None
         self.h0 = np.zeros(1)
         self.x_chars = np.zeros((1, 1))
         self.y_chars = np.zeros((1, 1))
@@ -155,15 +161,31 @@ class RNN:
             grad_W_l += np.asmatrix(grad_a_l[t, :]).T@np.asmatrix(ht[:, t])
             grad_U_l += np.asmatrix(grad_a_l[t, :]).T@np.asmatrix(xt[:, t])
 
+        grad_V_l = np.clip(a=grad_V_l, a_min=-5, a_max=5)
+        grad_W_l = np.clip(a=grad_W_l, a_min=-5, a_max=5)
+        grad_U_l = np.clip(a=grad_U_l, a_min=-5, a_max=5)
+
         self.grad_V = grad_V_l
         self.grad_W = grad_W_l
         self.grad_U = grad_U_l
 
         return loss, ht[:, tau]
 
-    def adagrad(self, n_epochs=100, e=0) -> None:
+    def adagrad(self, grad, m=None) -> (np.array, np.array):
         """
         func adagrad/3
+        @spec :: (Class(RNN), np.array, np.array) => (np.array, np.array)
+            Calculates the gradient according to AdaGrad algorithm.
+            Doesn't work that great imo, i prefer normal batch.
+        """
+        if m is None:
+            m = 0
+        m_t = m + np.power(grad, 2)
+        return m_t, - (self.eta/np.sqrt(m_t + self.eps))*grad
+
+    def fit(self, n_epochs=10, e=0) -> None:
+        """
+        func fit/3
         @spec :: (Class(RNN), integer, integer) => None
             Performs Stochastic Gradient Descent (SGD) according to the AdaGrad method.
             Iterates through the book-data list in steps of seq_length. For each
@@ -173,22 +195,26 @@ class RNN:
                 is somewhat optional. Simply train for longer if you want.
         """
         print('<| adagrad initialized:')
-        hprev, smooth_loss, epochs, smooth_loss = self.h0, None, 0, 100
+        hprev, smooth_loss, epochs, smooth_loss = self.h0, None, 0, 110
         while epochs < n_epochs:
-            if e > len(self.book_data) - self.seq_length - 1:
+            if e > len(self.book_data) - self.seq_length:
                 e = 0
                 epochs += 1
                 hprev = self.h0
             self.build_mapping(offset=e)
             loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
-            self.W += -self.eta*self.grad_W
-            self.V += -self.eta*self.grad_V
-            self.U += -self.eta*self.grad_U
+            self.prev_m_W, upd_W = self.adagrad(grad=self.grad_W, m=self.prev_m_W)
+            self.W += upd_W
+            self.prev_m_V, upd_V = self.adagrad(grad=self.grad_V, m=self.prev_m_V)
+            self.V += upd_V
+            self.prev_m_U, upd_U = self.adagrad(grad=self.grad_U, m=self.prev_m_U)
+            self.U += upd_U
             smooth_loss = 0.999*smooth_loss + 0.001*loss
             if e % 100 == 0:
                 print(f'\n\t\t iter = {e},\tsmooth loss = {smooth_loss}')
             if e % 500 == 0:
                 self.synthesize(self.book_data[e], h0=hprev, n=200)
+                # time.sleep(5)
             e += self.seq_length
 
     def synthesize(self, x0, h0=None, n=None) -> None:
@@ -212,60 +238,63 @@ class RNN:
             s += self.i2c[x0]
         print(s)
 
-    def numerical_grad(self, x, y, h=1e-4) -> (np.array, np.array, np.array):
+    def numerical_grad(self, x, y, h=1e-3) -> (np.array, np.array, np.array, list):
         """
         Don't look at this abomination...
         """
 
         assert x.shape == y.shape
 
-        grad_U = np.zeros((self.m, self.K))
-        grad_W = np.zeros((self.m, self.m))
-        grad_V = np.zeros((self.K, self.m))
+        grad_U = self.U
+        grad_W = self.W
+        grad_V = self.V
         grad_n_l = [grad_U, grad_W, grad_V]
         grad_a_l = [self.grad_U, self.grad_W, self.grad_V]
+        diff_l = []
 
         print('<| calculating numerical gradients for theta={U, W, V}')
-        print('\t\tInitiating grad_U numerical')
+        print(f'\t\tInitiating grad_U numerical, with shape {grad_U.shape}')
         for idx in tqdm(range(grad_U.shape[0])):
             for jdx in range(grad_U.shape[1]):
-                grad_try_U = np.copy(grad_U)
+                grad_try_U = grad_U
                 grad_try_U[idx, jdx] += h
                 _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
 
-                grad_try_U = np.copy(grad_U)
+                grad_try_U = grad_U
                 grad_try_U[idx, jdx] -= h
                 _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
                 grad_U[idx, jdx] = (loss_plus - loss_minus) / (2*h)
 
-        print('\n\t\tInitiating grad_W numerical')
+        print(f'\n\t\tInitiating grad_W numerical, with shape {grad_W.shape}')
         for idx in tqdm(range(grad_W.shape[0])):
             for jdx in range(grad_W.shape[1]):
-                grad_try_W = np.copy(grad_W)
+                grad_try_W = grad_W
                 grad_try_W[idx, jdx] += h
                 _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
+                print(f'plus loss: {loss_plus}')
 
-                grad_try_W = np.copy(grad_W)
+                grad_try_W = grad_W
                 grad_try_W[idx, jdx] -= h
                 _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
+                print(f'minus loss: {loss_minus}')
                 grad_W[idx, jdx] = (loss_plus - loss_minus) / (2*h)
 
-        print('\n\t\tInitiating grad_V numerical')
+        print(f'\n\t\tInitiating grad_V numerical, with shape {grad_V.shape}')
         for idx in tqdm(range(grad_V.shape[0])):
             for jdx in range(grad_V.shape[1]):
-                grad_try_V = np.copy(grad_V)
+                grad_try_V = grad_V
                 grad_try_V[idx, jdx] += h
                 _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
 
-                grad_try_V = np.copy(grad_V)
+                grad_try_V = grad_V
                 grad_try_V[idx, jdx] -= h
                 _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
                 grad_V[idx, jdx] = (loss_plus - loss_minus) / (2*h)
 
         for (g_a, g_n) in zip(grad_a_l, grad_n_l):
-            self.__compare_gradients__(g_a=g_a, g_n=g_n)
+            diff_l.append(self.__compare_gradients__(g_a=g_a, g_n=g_n))
 
-        return grad_V, grad_W, grad_U
+        return grad_V, grad_W, grad_U, diff_l
 
     def onehot_idx(self, idx) -> np.array:
         """
@@ -277,36 +306,6 @@ class RNN:
         x = np.zeros((self.K, 1))
         x[idx, 0] = 1
         return x
-
-    @staticmethod
-    def __loss__(p, y) -> np.array:
-        """
-        func __loss__/2
-        @spec :: (np.array, np.array) => np.array
-            Computes the cross-entropy loss between the given output probabilities p
-            and the onehot encoded target labels y. Returns the loss as a np.array.
-            If you want an integer, extract it from the array by accessing __loss__()[0, 0].
-        """
-        return -np.log(np.dot(y.T, p))
-
-    @staticmethod
-    def __softmax__(x) -> np.array:
-        """
-        func __softmax__/1
-        @spec :: (np.array) => np.array
-            Computes the softmax of the given np.array x.
-            This turns the values of x into probabilities such that they sum to 1.
-        """
-        return np.exp(x) / np.sum(np.exp(x), axis=0)
-
-    @staticmethod
-    def __compare_gradients__(g_a, g_n, eps=1e-6):
-        assert (g_a.shape == g_n.shape), print('<| shape of g_a: {}\n<| shape of g_n: {}'.format(g_a.shape, g_n.shape))
-        for idx in range(g_a.shape[0]):
-            s = '['
-            for jdx in range(g_a.shape[1]):
-                s += ' ' + str(np.abs(g_a[idx, jdx] - g_n[idx, jdx]) / max(eps, np.abs(g_a[idx, jdx]) + np.abs(g_n[idx, jdx])))
-            print(s + ']')
 
     def __load__(self) -> None:
         """
@@ -346,17 +345,53 @@ class RNN:
         print(f'<| deleting instance of {self.__repr__()}')
         print('-|' + '+' * 100)
 
+    @staticmethod
+    def __loss__(p, y) -> np.array:
+        """
+        func __loss__/2
+        @spec :: (np.array, np.array) => np.array
+            Computes the cross-entropy loss between the given output probabilities p
+            and the onehot encoded target labels y. Returns the loss as a np.array.
+            If you want an integer, extract it from the array by accessing __loss__()[0, 0].
+        """
+        return -np.log(np.dot(y.T, p))
+
+    @staticmethod
+    def __softmax__(x) -> np.array:
+        """
+        func __softmax__/1
+        @spec :: (np.array) => np.array
+            Computes the softmax of the given np.array x.
+            This turns the values of x into probabilities such that they sum to 1.
+        """
+        return np.exp(x) / np.sum(np.exp(x), axis=0)
+
+    @staticmethod
+    def __compare_gradients__(g_a, g_n, eps=1e-6) -> np.array:
+        """
+        func __compare_gradients__/3
+        @spec :: (np.array, np.array, float) => None
+            Compare the given gradients. Analytical gradient g_a vs numerical gradient g_n.
+            The difference between them is the absolute difference divided by the sum of elements.
+        """
+        assert (g_a.shape == g_n.shape), print('<| shape of g_a: {}\n<| shape of g_n: {}'.format(g_a.shape, g_n.shape))
+        err = np.zeros(g_a.shape)
+        for idx in range(err.shape[0]):
+            for jdx in range(err.shape[1]):
+                err[idx, jdx] = np.abs(g_a[idx, jdx] - g_n[idx, jdx]) / max(eps, np.abs(g_a[idx, jdx]) + np.abs(g_n[idx, jdx]))
+
+        return err
+
 
 def main():
     np.random.seed(2)
-    rnn = RNN(save=False, verbose=True, m=100, seq_length=25)
+    rnn = RNN(save=False, verbose=True, m=5, seq_length=25)
     rnn.prepare_data()
     rnn.init_model()
     rnn.build_mapping()
-    rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
-    _ = rnn.numerical_grad(x=rnn.x_chars, y=rnn.y_chars)
-
-    # rnn.adagrad()
+    # rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
+    # v, w, u, diff = rnn.numerical_grad(x=rnn.x_chars, y=rnn.y_chars)
+    rnn.fit()
 
 
 if __name__ == '__main__':
