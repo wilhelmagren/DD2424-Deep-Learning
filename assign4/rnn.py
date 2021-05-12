@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 
 class RNN:
-    def __init__(self, save=True, sigma=0.01, m=100, eta=0.01, gamma=0.9, eps=np.finfo(float).eps, seq_length=25, verbose=False):
+    def __init__(self, save=True, sigma=0.01, m=100, eta=0.1, gamma=0.9, eps=np.finfo(float).eps, seq_length=25, verbose=False):
         self.FILEPATH = os.getcwd()
         self.BOOK_FILEPATH = os.path.join(self.FILEPATH, 'data\\goblet_book.txt')
         self.i2c_FILEPATH = os.path.join(self.FILEPATH, 'data\\vocab.p')
@@ -34,34 +34,40 @@ class RNN:
         self.U = np.zeros(1)
         self.W = np.zeros(1)
         self.V = np.zeros(1)
+        self.grad_b = np.zeros(1)
+        self.grad_c = np.zeros(1)
         self.grad_U = np.zeros(1)
         self.grad_W = np.zeros(1)
         self.grad_V = np.zeros(1)
-        self.prev_m_W = None
-        self.prev_m_V = None
-        self.prev_m_U = None
+        self.prev_m_b = 0
+        self.prev_m_c = 0
+        self.prev_m_W = 0
+        self.prev_m_V = 0
+        self.prev_m_U = 0
         self.h0 = np.zeros(1)
-        self.x_chars = np.zeros((1, 1))
-        self.y_chars = np.zeros((1, 1))
+        self.x_chars = []
+        self.y_chars = []
         self.save = save
         self.verbose = verbose
         print('-|' + '+'*100)
 
     def build_mapping(self, offset=0):
         for idx in range(self.seq_length):
-            self.x_chars[:, idx] = np.transpose(self.onehot_idx(self.c2i[self.book_data[idx + offset]]).flatten())
-            self.y_chars[:, idx] = self.onehot_idx(self.c2i[self.book_data[idx + 1 + offset]]).flatten()
+            self.x_chars = [self.onehot_idx(self.c2i[self.book_data[idx + offset]]) for idx in range(offset, offset+self.seq_length)]
+            self.y_chars = [self.onehot_idx(self.c2i[self.book_data[idx + 1 + offset]]) for idx in range(offset, offset+self.seq_length)]
 
     def init_model(self):
-        self.b = np.zeros((self.m, ))
-        self.c = np.zeros((self.K, ))
-        self.U = np.random.rand(self.m, self.K)*self.sigma
-        self.W = np.random.rand(self.m, self.m)*self.sigma
-        self.V = np.random.rand(self.K, self.m)*self.sigma
+        self.b = np.zeros((self.m, 1))
+        self.c = np.zeros((self.K, 1))
+        self.U = np.random.normal(0, self.sigma, size=(self.m, self.K))
+        self.W = np.random.normal(0, self.sigma, size=(self.m, self.m))
+        self.V = np.random.normal(0, self.sigma, size=(self.K, self.m))
+        self.grad_b = np.zeros((self.m, 1))
+        self.grad_c = np.zeros((self.K, 1))
         self.grad_U = np.zeros((self.m, self.K))
         self.grad_W = np.zeros((self.m, self.m))
         self.grad_V = np.zeros((self.K, self.m))
-        self.h0 = np.zeros((self.m, ))
+        self.h0 = np.zeros((self.m, 1))
         self.x_chars = np.zeros((self.K, self.seq_length))
         self.y_chars = np.zeros((self.K, self.seq_length))
 
@@ -72,7 +78,7 @@ class RNN:
             self.__load__()
             assert len(self.vocab) == len(self.i2c.keys()), print(f'!!! ERROR :: vocab size not equal i2c size, {len(self.vocab)} != {len(self.i2c.keys())}')
             return
-        with open(self.BOOK_FILEPATH, 'r') as fd:
+        with open(self.BOOK_FILEPATH, 'r', encoding='utf8') as fd:
             for char in fd.read():
                 self.book_data.append(char)
                 if char not in self.vocab:
@@ -92,13 +98,7 @@ class RNN:
                   f'\t\tsize of c2i:\t{len(self.c2i.keys())}\n'
                   f'\t\tsize of data:\t{len(self.book_data)}')
 
-    def forward_pass(self, xt=None, yt=None, ht=None, W=None, V=None, U=None):
-        if ht is None:
-            ht = self.h0
-        if xt is None:
-            xt = self.x_chars
-        if yt is None:
-            yt = self.y_chars
+    def forward_pass(self, xl, yl, ht, W=None, V=None, U=None) -> (list, list, list, list, float):
         if W is None:
             W = self.W
         if V is None:
@@ -106,82 +106,73 @@ class RNN:
         if U is None:
             U = self.U
 
-        tau = xt.shape[1]
-        h_l, p_l, a_l, o_l, loss_l = np.zeros((self.m, tau + 1)), np.zeros((self.K, tau)), \
-                                     np.zeros((self.m, tau)), np.zeros((self.K, tau)), np.zeros((1, tau))
-        h_l[:, 0] = ht
+        tau = len(xl)
+        hl, pl, al, ol, ll = [], [], [], [], []
+        hl.append(ht)
         for t in range(tau):
-            # (m x 1) = (m x m)*(m x 1) + (m x k)*(d x 1) + (m x 1)   ::   Hidden state at time t before non-linearity
-            a_l[:, t] = W@h_l[:, t] + U@xt[:, t] + self.b
-            # hidden state at time t of size   (m x 1)
-            h_l[:, t] = np.tanh(a_l[:, t])
-            # output vector of unnormalized log probabilities for each class at time t of size   (K x 1)
-            o_l[:, t] = V@h_l[:, t] + self.c
-            # output probability vector at time t of size   (K x 1)
-            p_l[:, t] = self.__softmax__(o_l[:, t])
-            loss_l[:, t] = self.__loss__(p_l[:, t], yt[:, t])
-        return h_l, p_l, a_l, o_l, np.sum(loss_l)
+            al.append(W@hl[-1] + U@xl[t] + self.b)
+            hl.append(np.tanh(al[-1]))
+            ol.append(V@hl[-1] + self.c)
+            pl.append(self.__softmax__(ol[-1]))
+            ll.append(self.__loss__(pl[-1], yl[t]))
+
+        return hl, pl, al, ol, sum(ll)
 
     def backprop(self, xt, yt, h) -> (int, np.array):
         """
         func backprop/4
         @spec :: (Class(RNN), np.array, np.array, np.array) => (integer, np.array)
             Back Propagation Through Time gradient computations for RNN.
-
         """
-        tau = xt.shape[1]
-        ht, pt, at, ot, loss = self.forward_pass(xt=xt, yt=yt, ht=h)
+        tau = len(xt)
+        ht, pt, at, ot, loss = self.forward_pass(xl=xt, yl=yt, ht=h)
 
-        assert ht.shape == (self.m, tau + 1)
-        assert pt.shape == (self.K, tau)
-        assert at.shape == (self.m, tau)
-        assert ot.shape == (self.K, tau)
+        assert len(ht) == tau + 1
+        assert len(pt) == tau
+        assert len(at) == tau
+        assert len(ot) == tau
+        for (htt, ptt, att, ott) in zip(ht, pt, at, ot):
+            assert htt.shape == (self.m, 1)
+            assert ptt.shape == (self.K, 1)
+            assert att.shape == (self.m, 1)
+            assert ott.shape == (self.K, 1)
 
-        grad_o_l = np.zeros((tau, self.K))
-        grad_p_l = np.zeros((tau, self.K))
+        grad_o_l, grad_p_l, grad_h_l, grad_a_l = [], [], [], []
+        grad_c = np.zeros((self.K, 1))
+        grad_b = np.zeros((self.m, 1))
+        grad_V = np.zeros((self.K, self.m))
+        grad_W = np.zeros((self.m, self.m))
+        grad_U = np.zeros((self.m, self.K))
         for t in range(tau):
-            grad_p_l[t, :] = -yt[:, t].T/(yt[:, t].T@pt[:, t])
-            grad_o_l[t, :] = -(yt[:, t] - pt[:, t]).T
+            grad_p_l.append(-yt[t].T/(yt[t].T@pt[t]))
+            grad_o_l.append(-(yt[t] - pt[t]).T)
+            grad_c += grad_o_l[-1].T
+            grad_V += grad_o_l[-1].T@ht[t + 1].T
 
-        grad_V_l = np.zeros((self.K, self.m))
-        for t in range(tau):
-            grad_V_l += np.asmatrix(grad_o_l[t, :]).T@np.asmatrix(ht[:, t + 1])
-
-        grad_h_l = np.zeros((tau, self.m))
-        grad_a_l = np.zeros((tau, self.m))
-        grad_h_l[tau - 1, :] = grad_o_l[tau - 1, :]@self.V
-        grad_a_l[tau - 1, :] = grad_h_l[tau - 1, :]@np.diag(1 - (np.tanh(at[:, tau - 1])**2))
+        grad_h_l.append(grad_o_l[-1]@self.V)
+        grad_a_l.append(np.multiply(grad_h_l[-1], (1 - (ht[-1])**2).T))
         for t in range(tau - 2, -1, -1):
-            grad_h_l[t, :] = grad_o_l[t, :]@self.V + grad_a_l[t + 1, :]@self.W
-            grad_a_l[t, :] = grad_h_l[t, :]@np.diag(1 - (np.tanh(at[:, t])**2))
+            grad_h_l.append(grad_o_l[-1]@self.V + grad_a_l[-1]@self.W)
+            grad_a_l.append(np.multiply(grad_h_l[-1], (1 - (ht[-1])**2).T))
+            grad_b += grad_a_l[-1].T
 
-        grad_W_l = np.zeros((self.m, self.m))
-        grad_U_l = np.zeros((self.m, self.K))
         for t in range(tau):
-            grad_W_l += np.asmatrix(grad_a_l[t, :]).T@np.asmatrix(ht[:, t])
-            grad_U_l += np.asmatrix(grad_a_l[t, :]).T@np.asmatrix(xt[:, t])
+            grad_W += grad_a_l[t].T@ht[t].T
+            grad_U += grad_a_l[t].T@xt[t].T
 
-        grad_V_l = np.clip(a=grad_V_l, a_min=-5, a_max=5)
-        grad_W_l = np.clip(a=grad_W_l, a_min=-5, a_max=5)
-        grad_U_l = np.clip(a=grad_U_l, a_min=-5, a_max=5)
+        grad_c = np.clip(a=grad_c, a_min=-5, a_max=5)
+        grad_b = np.clip(a=grad_b, a_min=-5, a_max=5)
+        grad_V = np.clip(a=grad_V, a_min=-5, a_max=5)
+        grad_W = np.clip(a=grad_W, a_min=-5, a_max=5)
+        grad_U = np.clip(a=grad_U, a_min=-5, a_max=5)
 
-        self.grad_V = grad_V_l
-        self.grad_W = grad_W_l
-        self.grad_U = grad_U_l
+        self.grad_c = grad_c
+        self.grad_b = grad_b
+        self.grad_V = grad_V
+        self.grad_W = grad_W
+        self.grad_U = grad_U
 
-        return loss, ht[:, tau]
-
-    def adagrad(self, grad, m=None) -> (np.array, np.array):
-        """
-        func adagrad/3
-        @spec :: (Class(RNN), np.array, np.array) => (np.array, np.array)
-            Calculates the gradient according to AdaGrad algorithm.
-            Doesn't work that great imo, i prefer normal batch.
-        """
-        if m is None:
-            m = 0
-        m_t = m + np.power(grad, 2)
-        return m_t, - (self.eta/np.sqrt(m_t + self.eps))*grad
+        return loss, ht[-1]
 
     def fit(self, n_epochs=10, e=0) -> None:
         """
@@ -195,29 +186,41 @@ class RNN:
                 is somewhat optional. Simply train for longer if you want.
         """
         print('<| adagrad initialized:')
-        hprev, smooth_loss, epochs, smooth_loss = self.h0, None, 0, 110
+        hprev, smooth_loss, epochs, iter = self.h0, None, 0, 0
         while epochs < n_epochs:
-            if e > len(self.book_data) - self.seq_length:
+            if e > len(self.book_data) - self.seq_length - 1:
                 e = 0
                 epochs += 1
                 hprev = self.h0
             self.build_mapping(offset=e)
-            loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
-            self.prev_m_W, upd_W = self.adagrad(grad=self.grad_W, m=self.prev_m_W)
-            self.W += upd_W
-            self.prev_m_V, upd_V = self.adagrad(grad=self.grad_V, m=self.prev_m_V)
-            self.V += upd_V
-            self.prev_m_U, upd_U = self.adagrad(grad=self.grad_U, m=self.prev_m_U)
-            self.U += upd_U
-            smooth_loss = 0.999*smooth_loss + 0.001*loss
-            if e % 100 == 0:
-                print(f'\n\t\t iter = {e},\tsmooth loss = {smooth_loss}')
-            if e % 500 == 0:
-                self.synthesize(self.book_data[e], h0=hprev, n=200)
-                # time.sleep(5)
-            e += self.seq_length
 
-    def synthesize(self, x0, h0=None, n=None) -> None:
+            loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
+            self.prev_m_c += self.grad_c**2
+            self.c += -(self.eta/(np.sqrt(self.prev_m_c + self.eps))*self.grad_c)
+
+            self.prev_m_b += self.grad_b ** 2
+            self.b += -(self.eta / (np.sqrt(self.prev_m_b + self.eps)) * self.grad_b)
+
+            self.prev_m_W += self.grad_W ** 2
+            self.W += -(self.eta / (np.sqrt(self.prev_m_W + self.eps)) * self.grad_W)
+
+            self.prev_m_V += self.grad_V ** 2
+            self.V += -(self.eta / (np.sqrt(self.prev_m_V + self.eps)) * self.grad_V)
+
+            self.prev_m_U += self.grad_U ** 2
+            self.U += -(self.eta / (np.sqrt(self.prev_m_U + self.eps)) * self.grad_U)
+
+            smooth_loss = loss if smooth_loss is None else 0.999*smooth_loss + 0.001*loss
+            if iter % 100 == 0:
+                print(f'\n\t\t iter = {iter},\tsmooth loss = {smooth_loss}')
+            if iter % 500 == 0:
+                pass
+                self.synthesize(self.book_data[e], hl=hprev, n=200)
+                time.sleep(2)
+            e += self.seq_length
+            iter += 1
+
+    def synthesize(self, x0, hl, n) -> None:
         """
         func synthesize/4
         @spec :: (Class(RNN), np.array, np.array, integer) => None
@@ -225,20 +228,17 @@ class RNN:
             Computes the forward pass given x0 and h0 which yields softmaxed outputs,
             the probabilities are used to sample from the available characters to chose next character in sequence.
         """
-        if n is None:
-            n = self.seq_length
-        if h0 is None:
-            h0 = self.h0
         s = ''
         x0 = self.c2i[x0]
         for idx in range(n):
-            _, pt, _, _, _ = self.forward_pass(xt=self.onehot_idx(x0), ht=h0)
-            rand_idx = np.random.choice(np.arange(0, self.K), p=pt.flatten('C'))
+            hl, pt, _, _, _ = self.forward_pass(xl=[self.onehot_idx(x0)], yl=[np.zeros((self.K, 1))], ht=hl)
+            rand_idx = np.random.choice(np.arange(0, self.K), p=pt[0].flatten('C'))
+            hl = hl[-1]
             x0 = rand_idx
             s += self.i2c[x0]
         print(s)
 
-    def numerical_grad(self, x, y, h=1e-3) -> (np.array, np.array, np.array, list):
+    def numerical_grad(self, x, y, h=1e-4) -> (np.array, np.array, np.array, list):
         """
         Don't look at this abomination...
         """
@@ -354,7 +354,7 @@ class RNN:
             and the onehot encoded target labels y. Returns the loss as a np.array.
             If you want an integer, extract it from the array by accessing __loss__()[0, 0].
         """
-        return -np.log(np.dot(y.T, p))
+        return -np.log(np.dot(y.T, p))[0, 0]
 
     @staticmethod
     def __softmax__(x) -> np.array:
@@ -384,11 +384,9 @@ class RNN:
 
 
 def main():
-    np.random.seed(2)
-    rnn = RNN(save=False, verbose=True, m=5, seq_length=25)
+    rnn = RNN(save=False, verbose=True, m=100, seq_length=25)
     rnn.prepare_data()
     rnn.init_model()
-    rnn.build_mapping()
     # rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
     # v, w, u, diff = rnn.numerical_grad(x=rnn.x_chars, y=rnn.y_chars)
     rnn.fit()
