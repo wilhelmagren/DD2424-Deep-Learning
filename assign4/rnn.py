@@ -1,6 +1,6 @@
 """
 Author: Wilhelm Ågren, wagren@kth.se
-Last edited: 11/05-2021
+Last edited: 13/05-2021
 """
 
 import os
@@ -17,6 +17,7 @@ class RNN:
         self.BOOK_FILEPATH = os.path.join(self.FILEPATH, 'data\\goblet_book.txt')
         self.i2c_FILEPATH = os.path.join(self.FILEPATH, 'data\\vocab.p')
         self.DATA_FILEPATH = os.path.join(self.FILEPATH, 'data\\data.p')
+        self.MODEL_FILEPATH = os.path.join(self.FILEPATH, 'model\\')
         self.vocab = set()
         self.book_data = []
         self.i2c = {}
@@ -45,6 +46,7 @@ class RNN:
         self.prev_m_V = 0
         self.prev_m_U = 0
         self.h0 = np.zeros(1)
+        self.hprev = np.zeros(1)
         self.x_chars = []
         self.y_chars = []
         self.loss_history = []
@@ -69,6 +71,7 @@ class RNN:
         self.grad_W = np.zeros((self.m, self.m))
         self.grad_V = np.zeros((self.K, self.m))
         self.h0 = np.zeros((self.m, 1))
+        self.hprev = np.zeros((self.m, 1))
         self.x_chars = np.zeros((self.K, self.seq_length))
         self.y_chars = np.zeros((self.K, self.seq_length))
 
@@ -246,12 +249,13 @@ class RNN:
 
             if iter % 100 == 0:
                 print(f'\n\t\t iter = {iter},\tsmooth loss = {smooth_loss}')
-            if iter % 5000 == 0:
-                self.synthesize(self.book_data[e], hl=hprev, n=200)
-                time.sleep(1)
+            # if iter % 10000 == 0:
+            #    self.synthesize(self.book_data[e], hl=hprev, n=200)
+            #    time.sleep(1)
             e += self.seq_length
             iter += 1
             self.loss_history.append(smooth_loss)
+            self.hprev = hprev
 
     def synthesize(self, x0, hl, n) -> None:
         """
@@ -354,6 +358,33 @@ class RNN:
         pickle.dump(self.i2c, open(self.i2c_FILEPATH, 'wb'))
         pickle.dump(self.book_data, open(self.DATA_FILEPATH, 'wb'))
 
+    def __load_model__(self):
+        """
+        Loads the already trained model weights from file(s) using pickle for reading.
+        Store the loaded weights as class attributes for Class(RNN).
+        """
+        if self.verbose:
+            print(f'\t\tloading trained model weights from folder: {self.MODEL_FILEPATH}')
+        self.b = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'b.p'), 'rb'))
+        self.c = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'C.p'), 'rb'))
+        self.W = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'W.p'), 'rb'))
+        self.V = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'V.p'), 'rb'))
+        self.U = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'U.p'), 'rb'))
+        self.hprev = pickle.load(open(os.path.join(self.MODEL_FILEPATH, 'hprev.p'), 'rb'))
+
+    def __save_model__(self):
+        """
+        Writes the trained model weights to file(s) using pickle for dumping.
+        """
+        if self.verbose:
+            print(f'\t\twriting the model weights to folder: {self.MODEL_FILEPATH}')
+        pickle.dump(self.b, open(os.path.join(self.MODEL_FILEPATH, 'b.p'), 'wb'))
+        pickle.dump(self.c, open(os.path.join(self.MODEL_FILEPATH, 'c.p'), 'wb'))
+        pickle.dump(self.W, open(os.path.join(self.MODEL_FILEPATH, 'W.p'), 'wb'))
+        pickle.dump(self.V, open(os.path.join(self.MODEL_FILEPATH, 'V.p'), 'wb'))
+        pickle.dump(self.U, open(os.path.join(self.MODEL_FILEPATH, 'U.p'), 'wb'))
+        pickle.dump(self.hprev, open(os.path.join(self.MODEL_FILEPATH, 'hprev.p'), 'wb'))
+
     def __repr__(self) -> str:
         return 'Class(RNN)'
 
@@ -405,15 +436,27 @@ class RNN:
 
         return err
 
+    def __fit__(self, max_epoch=2, load=False):
+        self.prepare_data()
+        self.init_model()
+        if load:
+            self.__load_model__()
+        self.fit(n_epochs=max_epoch)
+        self.__plot_loss__()
+        self.__save_model__()
+
+    def __synthesize_from_trained__(self, n):
+        self.prepare_data()
+        self.init_model()
+        self.__load_model__()
+        self.build_mapping(offset=0)
+        self.synthesize(x0=self.book_data[5], hl=self.hprev, n=n)
+
 
 def main():
     rnn = RNN(eta=0.1, sigma=0.01, save=False, verbose=True, m=100, seq_length=25)
-    rnn.prepare_data()
-    rnn.init_model()
-    # rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
-    # rnn.numerical_grad(xt=rnn.x_chars, yt=rnn.y_chars)
-    rnn.fit()
-    rnn.__plot_loss__()
+    # rnn.__fit__(load=True)
+    rnn.__synthesize_from_trained__(1000)
 
 
 if __name__ == '__main__':
