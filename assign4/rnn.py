@@ -7,12 +7,12 @@ import os
 import pickle
 import time
 import numpy as np
-from tqdm import tqdm
 import matplotlib.pyplot as plt
+plt.style.use('ggplot')
 
 
 class RNN:
-    def __init__(self, save=True, sigma=0.01, m=100, eta=0.1, gamma=0.9, eps=np.finfo(float).eps, seq_length=25, verbose=False):
+    def __init__(self, save=True, sigma=0.1, m=100, eta=0.1, gamma=0.9, eps=np.finfo(float).eps, seq_length=25, verbose=False):
         self.FILEPATH = os.getcwd()
         self.BOOK_FILEPATH = os.path.join(self.FILEPATH, 'data\\goblet_book.txt')
         self.i2c_FILEPATH = os.path.join(self.FILEPATH, 'data\\vocab.p')
@@ -47,14 +47,15 @@ class RNN:
         self.h0 = np.zeros(1)
         self.x_chars = []
         self.y_chars = []
+        self.loss_history = []
         self.save = save
         self.verbose = verbose
         print('-|' + '+'*100)
 
-    def build_mapping(self, offset=0):
+    def build_mapping(self, offset):
         for idx in range(self.seq_length):
-            self.x_chars = [self.onehot_idx(self.c2i[self.book_data[idx + offset]]) for idx in range(offset, offset+self.seq_length)]
-            self.y_chars = [self.onehot_idx(self.c2i[self.book_data[idx + 1 + offset]]) for idx in range(offset, offset+self.seq_length)]
+            self.x_chars = [self.onehot_idx(self.c2i[self.book_data[idx]]) for idx in range(offset, offset+self.seq_length)]
+            self.y_chars = [self.onehot_idx(self.c2i[self.book_data[idx + 1]]) for idx in range(offset, offset+self.seq_length)]
 
     def init_model(self):
         self.b = np.zeros((self.m, 1))
@@ -98,24 +99,50 @@ class RNN:
                   f'\t\tsize of c2i:\t{len(self.c2i.keys())}\n'
                   f'\t\tsize of data:\t{len(self.book_data)}')
 
-    def forward_pass(self, xl, yl, ht, W=None, V=None, U=None) -> (list, list, list, list, float):
+    def forward(self, xt, yt, ht, b=None, c=None, W=None, V=None, U=None, grad=None) -> (list, list, list, list, float):
+        """
+        func forward/69
+        @spec :: () => (list, list, list, list, float)
+            Calculates the forward pass of the network/evaluation of the network, given the data sequence xt,
+            target sequence yt, and initial state for hidden layer ht. Current activation function used is tanh,
+            in order to avoid both under- and overflows in gradient computations. Testing with ReLU lead to instant
+            overflows in gradient computations -> because the hidden states did not represent a code with values
+            from [-1, 1], but was instead anything in [0, inf] because of the linear transformation in ReLU for anything
+            larger than 0. The ReLU was suggested as another activation function in instructions but it did not work.
+        """
+        if b is None:
+            b = self.b
+        if c is None:
+            c = self.c
         if W is None:
             W = self.W
         if V is None:
             V = self.V
         if U is None:
             U = self.U
+        if grad is not None:
+            for key in grad:
+                if key == 'c':
+                    c = grad[key]
+                if key == 'b':
+                    b = grad[key]
+                if key == 'W':
+                    W = grad[key]
+                if key == 'V':
+                    V = grad[key]
+                if key == 'U':
+                    U = grad[key]
 
-        tau = len(xl)
+        tau = len(xt)
         hl, pl, al, ol, ll = [], [], [], [], []
         hl.append(ht)
         for t in range(tau):
-            al.append(W@hl[-1] + U@xl[t] + self.b)
+            al.append(W@hl[-1] + U@xt[t] + b)
             hl.append(np.tanh(al[-1]))
-            ol.append(V@hl[-1] + self.c)
+            ol.append(V@hl[-1] + c)
             pl.append(self.__softmax__(ol[-1]))
-            ll.append(self.__loss__(pl[-1], yl[t]))
-
+            ll.append(self.__loss__(pl[-1], yt[t]))
+        hl.pop(0)
         return hl, pl, al, ol, sum(ll)
 
     def backprop(self, xt, yt, h) -> (int, np.array):
@@ -123,11 +150,13 @@ class RNN:
         func backprop/4
         @spec :: (Class(RNN), np.array, np.array, np.array) => (integer, np.array)
             Back Propagation Through Time gradient computations for RNN.
+            Takes the current sequence of data xt, corresponding targets ty, and last calculated state of h.
+            Recursively calculates gradients of c, b, W, V, U. Clips gradients from [-5, 5] to avoid overflows.
         """
         tau = len(xt)
-        ht, pt, at, ot, loss = self.forward_pass(xl=xt, yl=yt, ht=h)
+        ht, pt, at, ot, loss = self.forward(xt=xt, yt=yt, ht=h)
 
-        assert len(ht) == tau + 1
+        assert len(ht) == tau
         assert len(pt) == tau
         assert len(at) == tau
         assert len(ot) == tau
@@ -137,28 +166,30 @@ class RNN:
             assert att.shape == (self.m, 1)
             assert ott.shape == (self.K, 1)
 
-        grad_o_l, grad_p_l, grad_h_l, grad_a_l = [], [], [], []
+        grad_o_l, grad_h_l, grad_a_l = [np.zeros(1) for _ in range(tau)], \
+                                       [np.zeros(1) for _ in range(tau)], \
+                                       [np.zeros(1) for _ in range(tau)]
+
         grad_c = np.zeros((self.K, 1))
         grad_b = np.zeros((self.m, 1))
         grad_V = np.zeros((self.K, self.m))
         grad_W = np.zeros((self.m, self.m))
         grad_U = np.zeros((self.m, self.K))
-        for t in range(tau):
-            grad_p_l.append(-yt[t].T/(yt[t].T@pt[t]))
-            grad_o_l.append(-(yt[t] - pt[t]).T)
-            grad_c += grad_o_l[-1].T
-            grad_V += grad_o_l[-1].T@ht[t + 1].T
 
-        grad_h_l.append(grad_o_l[-1]@self.V)
-        grad_a_l.append(np.multiply(grad_h_l[-1], (1 - (ht[-1])**2).T))
-        for t in range(tau - 2, -1, -1):
-            grad_h_l.append(grad_o_l[-1]@self.V + grad_a_l[-1]@self.W)
-            grad_a_l.append(np.multiply(grad_h_l[-1], (1 - (ht[-1])**2).T))
-            grad_b += grad_a_l[-1].T
+        for t in reversed(range(tau)):
+            grad_o_l[t] = -(yt[t] - pt[t]).T
+            grad_c += grad_o_l[t].T
+            grad_V += grad_o_l[t].T@ht[t].T
 
-        for t in range(tau):
-            grad_W += grad_a_l[t].T@ht[t].T
+            if t == tau - 1:
+                grad_h_l[t] = grad_o_l[t]@self.V
+            else:
+                grad_h_l[t] = grad_o_l[t]@self.V + grad_a_l[t + 1]@self.W
+            grad_a_l[t] = grad_h_l[t]@np.diag(1 - (ht[t][:, 0]**2))
+
+            grad_W += grad_a_l[t].T@ht[t - 1].T
             grad_U += grad_a_l[t].T@xt[t].T
+            grad_b += grad_a_l[t].T
 
         grad_c = np.clip(a=grad_c, a_min=-5, a_max=5)
         grad_b = np.clip(a=grad_b, a_min=-5, a_max=5)
@@ -174,7 +205,7 @@ class RNN:
 
         return loss, ht[-1]
 
-    def fit(self, n_epochs=10, e=0) -> None:
+    def fit(self, n_epochs=2, e=0) -> None:
         """
         func fit/3
         @spec :: (Class(RNN), integer, integer) => None
@@ -188,37 +219,39 @@ class RNN:
         print('<| adagrad initialized:')
         hprev, smooth_loss, epochs, iter = self.h0, None, 0, 0
         while epochs < n_epochs:
-            if e > len(self.book_data) - self.seq_length - 1:
+            if e >= len(self.book_data) - self.seq_length - 1:
                 e = 0
                 epochs += 1
                 hprev = self.h0
             self.build_mapping(offset=e)
 
             loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
+
             self.prev_m_c += self.grad_c**2
-            self.c += -(self.eta/(np.sqrt(self.prev_m_c + self.eps))*self.grad_c)
+            self.c += -(self.grad_c * self.eta/(np.sqrt(self.prev_m_c + self.eps)))
 
             self.prev_m_b += self.grad_b ** 2
-            self.b += -(self.eta / (np.sqrt(self.prev_m_b + self.eps)) * self.grad_b)
+            self.b += -(self.grad_b * self.eta / (np.sqrt(self.prev_m_b + self.eps)))
 
             self.prev_m_W += self.grad_W ** 2
-            self.W += -(self.eta / (np.sqrt(self.prev_m_W + self.eps)) * self.grad_W)
+            self.W += -(self.grad_W * self.eta / (np.sqrt(self.prev_m_W + self.eps)))
 
             self.prev_m_V += self.grad_V ** 2
-            self.V += -(self.eta / (np.sqrt(self.prev_m_V + self.eps)) * self.grad_V)
+            self.V += -(self.grad_V * self.eta / (np.sqrt(self.prev_m_V + self.eps)))
 
             self.prev_m_U += self.grad_U ** 2
-            self.U += -(self.eta / (np.sqrt(self.prev_m_U + self.eps)) * self.grad_U)
+            self.U += -(self.grad_U * self.eta / (np.sqrt(self.prev_m_U + self.eps)))
 
             smooth_loss = loss if smooth_loss is None else 0.999*smooth_loss + 0.001*loss
+
             if iter % 100 == 0:
                 print(f'\n\t\t iter = {iter},\tsmooth loss = {smooth_loss}')
-            if iter % 500 == 0:
-                pass
+            if iter % 5000 == 0:
                 self.synthesize(self.book_data[e], hl=hprev, n=200)
-                time.sleep(2)
+                time.sleep(1)
             e += self.seq_length
             iter += 1
+            self.loss_history.append(smooth_loss)
 
     def synthesize(self, x0, hl, n) -> None:
         """
@@ -231,70 +264,53 @@ class RNN:
         s = ''
         x0 = self.c2i[x0]
         for idx in range(n):
-            hl, pt, _, _, _ = self.forward_pass(xl=[self.onehot_idx(x0)], yl=[np.zeros((self.K, 1))], ht=hl)
+            hl, pt, _, _, _ = self.forward(xt=[self.onehot_idx(x0)], yt=[np.ones((self.K, 1))], ht=hl)
             rand_idx = np.random.choice(np.arange(0, self.K), p=pt[0].flatten('C'))
             hl = hl[-1]
             x0 = rand_idx
             s += self.i2c[x0]
         print(s)
 
-    def numerical_grad(self, x, y, h=1e-4) -> (np.array, np.array, np.array, list):
+    def numerical_grad(self, xt, yt, h=1e-4) -> None:
         """
-        Don't look at this abomination...
+        func numerical_grad/4
+        @spec :: (Class(RNN), list, list, float) => None
+            Computes the numerical gradients of each respective theta in the model.
+            Does this the way God intended man to do it, using the definition of the derivative.
+                =>    lim h->0 f(x+h) - f(x-h) / 2h
+            Compares the gradients using self.__compare_gradients__/2 which is a relative difference of each element
+            in the gradients. Otherwise can also compare using either mean or max absolute difference.
         """
 
-        assert x.shape == y.shape
+        assert len(xt) == len(yt)
 
-        grad_U = self.U
-        grad_W = self.W
-        grad_V = self.V
-        grad_n_l = [grad_U, grad_W, grad_V]
-        grad_a_l = [self.grad_U, self.grad_W, self.grad_V]
-        diff_l = []
+        weights = {'b': self.b, 'c': self.c, 'U': self.U, 'W': self.W, 'V': self.V}
+        gradients = {'b': np.zeros(self.grad_b.shape), 'c': np.zeros(self.grad_c.shape),
+                     'U': np.zeros(self.grad_U.shape), 'W': np.zeros(self.grad_W.shape), 'V': np.zeros(self.grad_V.shape)}
+        analytical_gradients = {'b': self.grad_b, 'c': self.grad_c, 'W': self.grad_W, 'V': self.grad_V, 'U': self.grad_U}
 
-        print('<| calculating numerical gradients for theta={U, W, V}')
-        print(f'\t\tInitiating grad_U numerical, with shape {grad_U.shape}')
-        for idx in tqdm(range(grad_U.shape[0])):
-            for jdx in range(grad_U.shape[1]):
-                grad_try_U = grad_U
-                grad_try_U[idx, jdx] += h
-                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
+        assert len(weights.keys()) == len(gradients.keys())
+        for w_k, g_k in zip(weights.keys(), gradients.keys()):
+            assert weights[w_k].shape == gradients[g_k].shape
 
-                grad_try_U = grad_U
-                grad_try_U[idx, jdx] -= h
-                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, U=grad_try_U)
-                grad_U[idx, jdx] = (loss_plus - loss_minus) / (2*h)
+        print('<| calculating numerical gradients for theta={b, c, U, W, V}')
+        for weight in weights:
+            grad = gradients[weight]
+            for idx in range(grad.shape[0]):
+                for jdx in range(grad.shape[1]):
+                    grad_try = np.copy(grad)
+                    grad_try[idx, jdx] += h
+                    _, _, _, _, l1 = self.forward(xt=xt, yt=yt, ht=self.h0, grad={weight: grad_try})
+                    grad_try = np.copy(grad)
+                    grad_try[idx, jdx] -= h
+                    _, _, _, _, l2 = self.forward(xt=xt, yt=yt, ht=self.h0, grad={weight: grad_try})
+                    grad[idx, jdx] = (l1 - l2) / (2*h)
 
-        print(f'\n\t\tInitiating grad_W numerical, with shape {grad_W.shape}')
-        for idx in tqdm(range(grad_W.shape[0])):
-            for jdx in range(grad_W.shape[1]):
-                grad_try_W = grad_W
-                grad_try_W[idx, jdx] += h
-                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
-                print(f'plus loss: {loss_plus}')
-
-                grad_try_W = grad_W
-                grad_try_W[idx, jdx] -= h
-                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, W=grad_try_W)
-                print(f'minus loss: {loss_minus}')
-                grad_W[idx, jdx] = (loss_plus - loss_minus) / (2*h)
-
-        print(f'\n\t\tInitiating grad_V numerical, with shape {grad_V.shape}')
-        for idx in tqdm(range(grad_V.shape[0])):
-            for jdx in range(grad_V.shape[1]):
-                grad_try_V = grad_V
-                grad_try_V[idx, jdx] += h
-                _, _, _, _, loss_plus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
-
-                grad_try_V = grad_V
-                grad_try_V[idx, jdx] -= h
-                _, _, _, _, loss_minus = self.forward_pass(xt=x, yt=y, V=grad_try_V)
-                grad_V[idx, jdx] = (loss_plus - loss_minus) / (2*h)
-
-        for (g_a, g_n) in zip(grad_a_l, grad_n_l):
-            diff_l.append(self.__compare_gradients__(g_a=g_a, g_n=g_n))
-
-        return grad_V, grad_W, grad_U, diff_l
+        for key in weights:
+            analytical, numerical = analytical_gradients[key], gradients[key]
+            # print(f'\t analytical gradient for  {key}  : {np.abs(analytical)}')
+            # print(self.__compare_gradients__(analytical, numerical))
+            print(f'\tmean err in gradient for  {key}  : {np.mean(np.abs(analytical - numerical))}\n')
 
     def onehot_idx(self, idx) -> np.array:
         """
@@ -345,8 +361,15 @@ class RNN:
         print(f'<| deleting instance of {self.__repr__()}')
         print('-|' + '+' * 100)
 
+    def __plot_loss__(self) -> None:
+        plt.plot([x for x in range(len(self.loss_history))], self.loss_history, linewidth=1, color='maroon')
+        plt.xlabel('iterations')
+        plt.ylabel('cross entropy loss')
+        plt.title('RNN loss history')
+        plt.show()
+
     @staticmethod
-    def __loss__(p, y) -> np.array:
+    def __loss__(p, y) -> float:
         """
         func __loss__/2
         @spec :: (np.array, np.array) => np.array
@@ -384,12 +407,13 @@ class RNN:
 
 
 def main():
-    rnn = RNN(save=False, verbose=True, m=100, seq_length=25)
+    rnn = RNN(eta=0.1, sigma=0.01, save=False, verbose=True, m=100, seq_length=25)
     rnn.prepare_data()
     rnn.init_model()
     # rnn.backprop(xt=rnn.x_chars, yt=rnn.y_chars, h=rnn.h0)
-    # v, w, u, diff = rnn.numerical_grad(x=rnn.x_chars, y=rnn.y_chars)
+    # rnn.numerical_grad(xt=rnn.x_chars, yt=rnn.y_chars)
     rnn.fit()
+    rnn.__plot_loss__()
 
 
 if __name__ == '__main__':
