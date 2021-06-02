@@ -313,13 +313,13 @@ def makemove(state, agent):
 
 
 if __name__ == '__main__':
-    # """
+    """
     scoree = RLtrain(time.time(), 1000)
     print(scoree)
     """
     state = Snake(10, 10)
     agent = SnakeNet()
-    weights = torch.load('./prettygood_semiold_model.pth', map_location=lambda storage, loc: storage)
+    weights = torch.load('./snake_306_4730.pth', map_location=lambda storage, loc: storage)
     agent.load_state_dict(weights)
     while state.alive():
         print(state)
@@ -328,4 +328,4 @@ if __name__ == '__main__':
         _, _, _ = state.next_state(action)
         time.sleep(0.1)
     print("LOOOOSER! score: {}".format(state.score))
-    """
+    # """
