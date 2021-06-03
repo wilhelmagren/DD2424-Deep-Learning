@@ -226,6 +226,7 @@ class RNN:
                 e = 0
                 epochs += 1
                 hprev = self.h0
+                print(f'\tall book_data read, new epoch={epochs}')
             self.build_mapping(offset=e)
 
             loss, hprev = self.backprop(xt=self.x_chars, yt=self.y_chars, h=hprev)
@@ -314,7 +315,7 @@ class RNN:
             analytical, numerical = analytical_gradients[key], gradients[key]
             # print(f'\t analytical gradient for  {key}  : {np.abs(analytical)}')
             # print(self.__compare_gradients__(analytical, numerical))
-            print(f'\tmean err in gradient for  {key}  : {np.mean(np.abs(analytical - numerical))}\n')
+            print(f'\tmax err in gradient for  {key}  : {np.max(np.abs(analytical - numerical))}\n')
 
     def onehot_idx(self, idx) -> np.array:
         """
@@ -436,7 +437,7 @@ class RNN:
 
         return err
 
-    def __fit__(self, max_epoch=2, load=False):
+    def __fit__(self, max_epoch=2, load=False) -> None:
         self.prepare_data()
         self.init_model()
         if load:
@@ -445,18 +446,26 @@ class RNN:
         self.__plot_loss__()
         self.__save_model__()
 
-    def __synthesize_from_trained__(self, n):
+    def __synthesize_from_trained__(self, n) -> None:
         self.prepare_data()
         self.init_model()
         self.__load_model__()
         self.build_mapping(offset=0)
-        self.synthesize(x0=self.book_data[5], hl=self.hprev, n=n)
+        self.synthesize(x0=self.book_data[0], hl=self.hprev, n=n)
+
+    def __verify_gradients__(self) -> None:
+        self.prepare_data()
+        self.init_model()
+        self.build_mapping(offset=0)
+        self.backprop(xt=self.x_chars, yt=self.y_chars, h=self.h0)
+        self.numerical_grad(xt=self.x_chars, yt=self.y_chars)
 
 
 def main():
-    rnn = RNN(eta=0.1, sigma=0.01, save=False, verbose=True, m=100, seq_length=25)
-    # rnn.__fit__(load=True)
-    rnn.__synthesize_from_trained__(1000)
+    rnn = RNN(eta=0.1, sigma=0.01, save=False, verbose=True, m=5, seq_length=5)
+    rnn.__verify_gradients__()
+    # rnn.__fit__(load=False, max_epoch=10)
+    # rnn.__synthesize_from_trained__(1000)
 
 
 if __name__ == '__main__':
