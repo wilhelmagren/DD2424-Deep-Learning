@@ -15,10 +15,10 @@ class SnakeNet(nn.Module):
         self.num_iter = 1000
         self.num_actions = 4
         self.gamma = 0.97
-        self.initial_epsilon = 0.8
+        self.initial_epsilon = 0.2
         self.final_epsilon = 0.001
         self.epsilon = 0.1
-        self.batchsize = 1000
+        self.batchsize = 512
         self.buff_size = 100
         self.memory = []
         self.fc1 = nn.Linear(in_features=12, out_features=128)
@@ -207,7 +207,7 @@ class Snake(object):
             reward = 10
         terminal = not self.alive()
         if terminal:
-            reward = -5
+            reward = -10
         return self.serialize(), torch.tensor(reward)[None], torch.tensor(terminal)[None]
 
     @staticmethod
@@ -228,14 +228,14 @@ def RLtrain(starttime, episodes, max_steps=100):
         [0, 1, 0]: don't change the movement
         [0, 0, 1]: tilt the snake movement clockwise
     """
-    # weights = torch.load('./snake_126_50.pth', map_location=lambda storage, loc: storage)
+    weights = torch.load('./snake_228_4548.pth', map_location=lambda storage, loc: storage)
     agent = SnakeNet()
-    # agent.load_state_dict(weights)
+    agent.load_state_dict(weights)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     agent.cuda()
     environment = Snake(10, 10)
-    epsilon_decrements = np.linspace(agent.initial_epsilon, agent.final_epsilon, agent.num_iter)
-    optimizer = optim.Adam(agent.parameters(), lr=0.003)
+    epsilon_decrements = np.linspace(agent.initial_epsilon, agent.final_epsilon, episodes)
+    optimizer = optim.Adam(agent.parameters(), lr=0.0001)
     scores = []
     softmax = nn.Softmax(dim=1)
     # initialize mean squared error loss
@@ -248,6 +248,7 @@ def RLtrain(starttime, episodes, max_steps=100):
         totloss = 0
         if ep % 50 == 0 and ep != 0:
             torch.save(agent.state_dict(), "./snake_{}.pth".format(ep))
+        agent.epsilon = epsilon_decrements[ep]
         for step in range(agent.num_iter):
             initserialized_state = state.to(device)
             output = softmax(agent(initserialized_state.float()))
@@ -268,7 +269,6 @@ def RLtrain(starttime, episodes, max_steps=100):
             state = next_state
             if len(agent.memory) > agent.batchsize:
                 agent.memory.pop(0)
-            agent.epsilon = epsilon_decrements[step]
 
             # sample random batch
             batch = random.sample(agent.memory, min(len(agent.memory), agent.batchsize))
@@ -319,7 +319,7 @@ if __name__ == '__main__':
     """
     state = Snake(10, 10)
     agent = SnakeNet()
-    weights = torch.load('./snake_306_4730.pth', map_location=lambda storage, loc: storage)
+    weights = torch.load('./v1_snake.pth', map_location=lambda storage, loc: storage)
     agent.load_state_dict(weights)
     while state.alive():
         print(state)
